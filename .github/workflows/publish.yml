@@ -1,0 +1,65 @@
+name: Publish CLI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "dist/**"
+      - "package.json"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Update npm for OIDC trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Publish to npm (OIDC trusted publishing)
+        # --ignore-scripts: dist/ is pre-built in the private monorepo; skip rebuild
+        # --provenance: sign with sigstore (works because this repo is public)
+        run: npm publish --provenance --access public --ignore-scripts
+
+      - name: Create Sentry Release
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: dnotech
+          SENTRY_PROJECT: vem-cli
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          npx @sentry/cli@^2 releases new "$VERSION"
+          npx @sentry/cli@^2 releases set-commits "$VERSION" --auto
+          npx @sentry/cli@^2 releases finalize "$VERSION"
+
+      - name: Notify Telegram on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "unknown")
+          TEXT=$(printf '🔴 <b>CLI publish failed</b> (v%s)\n<b>Commit:</b> <code>%.7s</code>\n<a href="%s/%s/actions/runs/%s">View run →</a>' \
+            "$VERSION" "${{ github.sha }}" "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}")
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "text=${TEXT}" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "parse_mode=HTML" \
+            -d "disable_web_page_preview=true"
