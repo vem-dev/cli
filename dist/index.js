@@ -6955,11 +6955,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.37",
+  release: "0.1.38",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.37").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.38").addHelpText(
   "after",
   `
 ${chalk16.bold("\n\u26A1 Power Workflows:")}

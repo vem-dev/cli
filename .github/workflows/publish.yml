@@ -48,7 +48,7 @@ jobs:
         run: |
           VERSION=$(node -p "require('./package.json').version")
           npx @sentry/cli@^2 releases new "$VERSION"
-          npx @sentry/cli@^2 releases set-commits "$VERSION" --auto
+          npx @sentry/cli@^2 releases set-commits "$VERSION" --auto --ignore-missing
           npx @sentry/cli@^2 releases finalize "$VERSION"
 
       - name: Notify Telegram on failure
