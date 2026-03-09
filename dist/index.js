@@ -44,8 +44,8 @@ import prompts4 from "prompts";
 // src/runtime/auth.ts
 import { spawn } from "child_process";
 import chalk from "chalk";
-var API_URL = "http://localhost:3002";
-var WEB_URL = "http://localhost:3000";
+var API_URL = "https://api.vem.dev";
+var WEB_URL = "https://app.vem.dev";
 function getApiUrlCandidates(apiUrl) {
   const candidates = [apiUrl];
   try {
@@ -2423,7 +2423,7 @@ function registerAuthCommands(program2) {
           if (receivedKey) {
             await configService.setApiKey(receivedKey);
             try {
-              const API_URL2 = "http://localhost:3002";
+              const API_URL2 = "https://api.vem.dev";
               const headers = await buildDeviceHeaders(configService);
               await fetch(`${API_URL2}/verify`, {
                 headers: {
@@ -6953,13 +6953,13 @@ async function initServerMonitoring(config) {
 
 // src/index.ts
 await initServerMonitoring({
-  dsn: process.env.VEM_CLI_SENTRY_DSN || "",
+  dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.36",
+  release: "0.1.37",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.36").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.37").addHelpText(
   "after",
   `
 ${chalk16.bold("\n\u26A1 Power Workflows:")}
