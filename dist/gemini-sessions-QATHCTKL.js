@@ -3,10 +3,10 @@ import {
   getGeminiTmpDir,
   listGeminiSessions
 } from "./chunk-VL6CJCOB.js";
-import "./chunk-G3PMV62Z.js";
+import "./chunk-PZ5AY32C.js";
 export {
   computeGeminiSessionStats,
   getGeminiTmpDir,
   listGeminiSessions
 };
-//# sourceMappingURL=gemini-sessions-C4WBPXS3.js.map
+//# sourceMappingURL=gemini-sessions-QATHCTKL.js.map

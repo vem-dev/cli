@@ -15,6 +15,7 @@ concurrency:
 jobs:
   publish:
     name: Publish to npm
+    if: github.repository == 'vem-dev/cli'
     runs-on: ubuntu-latest
     environment: production
     permissions:

@@ -53,7 +53,7 @@ import {
   validateEnv,
   validatePasswordStrength,
   validateWebhookUrl
-} from "./chunk-4KRWMMZ7.js";
+} from "./chunk-EYHLLMFI.js";
 import {
   computeCopilotSessionStats,
   getCopilotSessionsDir,
@@ -70,7 +70,7 @@ import {
   getGeminiTmpDir,
   listGeminiSessions
 } from "./chunk-VL6CJCOB.js";
-import "./chunk-G3PMV62Z.js";
+import "./chunk-PZ5AY32C.js";
 export {
   CHANGELOG_DIR,
   CHANGELOG_FILE,
@@ -137,4 +137,4 @@ export {
   validatePasswordStrength,
   validateWebhookUrl
 };
-//# sourceMappingURL=dist-RJ5JWMNA.js.map
+//# sourceMappingURL=dist-FRSPOVEU.js.map

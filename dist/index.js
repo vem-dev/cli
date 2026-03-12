@@ -22,13 +22,13 @@ import {
   isVemInitialized,
   listAllAgentSessions,
   parseVemUpdateBlock
-} from "./chunk-4KRWMMZ7.js";
+} from "./chunk-EYHLLMFI.js";
 import {
   readCopilotSessionDetail
 } from "./chunk-PO3WNPAJ.js";
 import "./chunk-PMUCN3Y6.js";
 import "./chunk-VL6CJCOB.js";
-import "./chunk-G3PMV62Z.js";
+import "./chunk-PZ5AY32C.js";
 
 // src/index.ts
 import chalk16 from "chalk";
@@ -2739,7 +2739,7 @@ function registerMaintenanceCommands(program2) {
   });
   program2.command("diff").description("Show differences between local and cloud state").option("--detailed", "Show detailed content diffs").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DiffService } = await import("./dist-RJ5JWMNA.js");
+      const { DiffService } = await import("./dist-FRSPOVEU.js");
       const diffService = new DiffService();
       const result = await diffService.compareWithLastPush();
       if (options.json) {
@@ -2797,7 +2797,7 @@ ${"\u2500".repeat(50)}`));
   });
   program2.command("doctor").description("Run health checks on VEM setup").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DoctorService } = await import("./dist-RJ5JWMNA.js");
+      const { DoctorService } = await import("./dist-FRSPOVEU.js");
       const doctorService = new DoctorService();
       const results = await doctorService.runAllChecks();
       if (options.json) {
@@ -6955,11 +6955,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.38",
+  release: "0.1.39",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.38").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.39").addHelpText(
   "after",
   `
 ${chalk16.bold("\n\u26A1 Power Workflows:")}
