@@ -2,6 +2,59 @@ import {
   __export
 } from "./chunk-PZ5AY32C.js";
 
+// ../../packages/core/dist/provider-key-encryption.js
+import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
+var ALGORITHM = "aes-256-gcm";
+var IV_BYTES = 12;
+var AUTH_TAG_BYTES = 16;
+function getEncryptionKey() {
+  const secret = process.env.PROVIDER_KEY_ENCRYPTION_SECRET;
+  if (!secret || secret.length !== 64) {
+    throw new Error(`PROVIDER_KEY_ENCRYPTION_SECRET must be a 64-character hex string (32 bytes). Generate one with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`);
+  }
+  return Buffer.from(secret, "hex");
+}
+function encryptProviderKey(plaintext) {
+  const key = getEncryptionKey();
+  const iv = randomBytes(IV_BYTES);
+  const cipher = createCipheriv(ALGORITHM, key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(plaintext, "utf8"),
+    cipher.final()
+  ]);
+  const authTag = cipher.getAuthTag();
+  return [
+    iv.toString("hex"),
+    authTag.toString("hex"),
+    encrypted.toString("hex")
+  ].join(":");
+}
+function decryptProviderKey(encoded) {
+  const key = getEncryptionKey();
+  const parts = encoded.split(":");
+  if (parts.length !== 3) {
+    throw new Error("Invalid encrypted key format.");
+  }
+  const [ivHex, authTagHex, ciphertextHex] = parts;
+  const iv = Buffer.from(ivHex, "hex");
+  const authTag = Buffer.from(authTagHex, "hex");
+  const ciphertext = Buffer.from(ciphertextHex, "hex");
+  if (iv.length !== IV_BYTES || authTag.length !== AUTH_TAG_BYTES) {
+    throw new Error("Invalid encrypted key components.");
+  }
+  const decipher = createDecipheriv(ALGORITHM, key, iv);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([
+    decipher.update(ciphertext),
+    decipher.final()
+  ]).toString("utf8");
+}
+function maskProviderKey(plaintext) {
+  if (plaintext.length <= 10)
+    return "***";
+  return `${plaintext.slice(0, 10)}***`;
+}
+
 // ../../packages/core/dist/agent.js
 import path5 from "path";
 
@@ -772,10 +825,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path10) {
-  if (!path10)
+function getElementAtPath(obj, path11) {
+  if (!path11)
     return obj;
-  return path10.reduce((acc, key) => acc?.[key], obj);
+  return path11.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1158,11 +1211,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path10, issues) {
+function prefixIssues(path11, issues) {
   return issues.map((iss) => {
     var _a2;
     (_a2 = iss).path ?? (_a2.path = []);
-    iss.path.unshift(path10);
+    iss.path.unshift(path11);
     return iss;
   });
 }
@@ -1345,7 +1398,7 @@ function formatError(error48, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error48, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error49, path10 = []) => {
+  const processError = (error49, path11 = []) => {
     var _a2, _b;
     for (const issue2 of error49.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
@@ -1355,7 +1408,7 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
       } else if (issue2.code === "invalid_element") {
         processError({ issues: issue2.issues }, issue2.path);
       } else {
-        const fullpath = [...path10, ...issue2.path];
+        const fullpath = [...path11, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -1387,8 +1440,8 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path10 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path10) {
+  const path11 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path11) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -13365,13 +13418,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path10 = ref.slice(1).split("/").filter(Boolean);
-  if (path10.length === 0) {
+  const path11 = ref.slice(1).split("/").filter(Boolean);
+  if (path11.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path10[0] === defsKey) {
-    const key = path10[1];
+  if (path11[0] === defsKey) {
+    const key = path11[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -13808,6 +13861,7 @@ var TaskActionSchema = external_exports.object({
     "update_recurrence",
     "update_owner",
     "update_reviewer",
+    "update_cycle",
     "delete",
     "comment",
     "completion"
@@ -13818,12 +13872,61 @@ var TaskActionSchema = external_exports.object({
 });
 var TaskStatusSchema = external_exports.enum([
   "todo",
+  "ready",
+  "in-review",
   "in-progress",
   "blocked",
   "done"
 ]);
 var TaskPrioritySchema = external_exports.enum(["low", "medium", "high", "critical"]);
-var TaskTypeSchema = external_exports.enum(["feature", "bug", "chore"]);
+var TaskTypeSchema = external_exports.enum([
+  "feature",
+  "bug",
+  "chore",
+  "spike",
+  "enabler"
+]);
+var CycleAppetiteSchema = external_exports.enum(["small", "medium", "large"]);
+var CycleStatusSchema = external_exports.enum(["planned", "active", "closed"]);
+var CycleSchema = external_exports.object({
+  id: external_exports.string(),
+  name: external_exports.string(),
+  goal: external_exports.string(),
+  appetite: CycleAppetiteSchema.optional(),
+  status: CycleStatusSchema,
+  start_at: external_exports.string().datetime().optional(),
+  closed_at: external_exports.string().datetime().optional(),
+  created_at: external_exports.string().datetime(),
+  updated_at: external_exports.string().datetime()
+});
+var CycleCreateSchema = external_exports.object({
+  name: external_exports.string(),
+  goal: external_exports.string(),
+  appetite: CycleAppetiteSchema.optional(),
+  start_at: external_exports.string().datetime().optional()
+});
+var CycleUpdateSchema = external_exports.object({
+  id: external_exports.string(),
+  name: external_exports.string().optional(),
+  goal: external_exports.string().optional(),
+  appetite: CycleAppetiteSchema.optional(),
+  status: CycleStatusSchema.optional(),
+  start_at: external_exports.string().datetime().optional(),
+  closed_at: external_exports.string().datetime().optional()
+});
+var TaskFlowMetricsSchema = external_exports.object({
+  task_id: external_exports.string(),
+  lead_time_ms: external_exports.number().int().optional(),
+  cycle_time_ms: external_exports.number().int().optional(),
+  time_in_status: external_exports.record(external_exports.string(), external_exports.number().int())
+});
+var ProjectFlowSummarySchema = external_exports.object({
+  wip_count: external_exports.number().int(),
+  throughput_last_7d: external_exports.number().int(),
+  throughput_last_30d: external_exports.number().int(),
+  avg_cycle_time_ms: external_exports.number().int().optional(),
+  avg_lead_time_ms: external_exports.number().int().optional()
+});
 var TaskSchema = external_exports.object({
   id: external_exports.string(),
   title: external_exports.string(),
@@ -13853,7 +13956,12 @@ var TaskSchema = external_exports.object({
   updated_at: external_exports.string().datetime().optional(),
   due_at: external_exports.string().datetime().optional(),
   github_issue_number: external_exports.number().optional(),
-  deleted_at: external_exports.string().datetime().optional()
+  deleted_at: external_exports.string().datetime().optional(),
+  // Context-Flow fields
+  cycle_id: external_exports.string().optional(),
+  impact_score: external_exports.number().min(0).max(100).optional(),
+  ready_at: external_exports.string().datetime().optional(),
+  started_at: external_exports.string().datetime().optional()
 });
 var TaskListSchema = external_exports.object({
   tasks: external_exports.array(TaskSchema)
@@ -13885,7 +13993,10 @@ var TaskUpdateSchema = external_exports.object({
   reasoning: external_exports.string().optional(),
   actor: external_exports.string().optional(),
   github_issue_number: external_exports.number().optional(),
-  deleted_at: external_exports.string().datetime().optional()
+  deleted_at: external_exports.string().datetime().optional(),
+  // Context-Flow fields
+  cycle_id: external_exports.string().optional(),
+  impact_score: external_exports.number().min(0).max(100).optional()
 });
 var TaskCreateSchema = external_exports.object({
   title: external_exports.string(),
@@ -13909,7 +14020,10 @@ var TaskCreateSchema = external_exports.object({
   task_context_summary: external_exports.string().optional(),
   related_decisions: external_exports.array(RelatedDecisionRefSchema).optional(),
   validation_steps: external_exports.array(external_exports.string()).optional(),
-  reasoning: external_exports.string().optional()
+  reasoning: external_exports.string().optional(),
+  // Context-Flow fields
+  cycle_id: external_exports.string().optional(),
+  impact_score: external_exports.number().min(0).max(100).optional()
 });
 var VemUpdateSchema = external_exports.object({
   tasks: external_exports.array(TaskUpdateSchema).optional(),
@@ -13917,7 +14031,8 @@ var VemUpdateSchema = external_exports.object({
   changelog_append: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]).optional(),
   decisions_append: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]).optional(),
   current_state: external_exports.string().optional(),
-  context: external_exports.string().optional()
+  context: external_exports.string().optional(),
+  new_cycles: external_exports.array(CycleCreateSchema).optional()
 });
 var WebhookEventSchema = external_exports.enum([
   "task.created",
@@ -13931,7 +14046,10 @@ var WebhookEventSchema = external_exports.enum([
   "decision.added",
   "changelog.updated",
   "drift.detected",
-  "project.linked"
+  "project.linked",
+  "cycle.created",
+  "cycle.started",
+  "cycle.closed"
 ]);
 var WebhookSchema = external_exports.object({
   id: external_exports.string().uuid(),
@@ -13975,6 +14093,7 @@ import { findUp } from "find-up-simple";
 import fs from "fs-extra";
 var VEM_DIR = ".vem";
 var TASKS_DIR = "tasks";
+var CYCLES_DIR = "cycles";
 var DECISIONS_DIR = "decisions";
 var CHANGELOG_DIR = "changelog";
 var TASKS_FILE = "TASKS.json";
@@ -14434,6 +14553,10 @@ var TaskService = class {
       task_context_summary: options?.task_context_summary,
       evidence: options?.evidence,
       validation_steps: options?.validation_steps,
+      cycle_id: options?.cycle_id,
+      impact_score: options?.impact_score,
+      ready_at: initialStatus === "ready" || initialStatus === "in-progress" ? timestamp : void 0,
+      started_at: initialStatus === "in-progress" ? timestamp : void 0,
       created_at: timestamp,
       updated_at: timestamp,
       actions: [
@@ -14501,6 +14624,10 @@ var TaskService = class {
     const nextTaskContext = taskContextProvided ? normalizeText(taskPatch.task_context) : currentTask.task_context;
     let nextTaskContextSummary = taskContextSummaryProvided ? normalizeText(taskPatch.task_context_summary) : currentTask.task_context_summary;
     const nextValidationSteps = validationProvided ? normalizeStringArray(taskPatch.validation_steps) ?? [] : currentTask.validation_steps;
+    const cycleIdProvided = hasOwn("cycle_id");
+    const nextCycleId = cycleIdProvided ? taskPatch.cycle_id : currentTask.cycle_id;
+    const impactScoreProvided = hasOwn("impact_score");
+    const nextImpactScore = impactScoreProvided ? taskPatch.impact_score : currentTask.impact_score;
     const blockingIds = await this.getBlockingIds(nextDependsOn, nextBlockedBy, storage);
     const hasBlocking = blockingIds.length > 0;
     if (nextStatus === "done" && hasBlocking) {
@@ -14618,6 +14745,14 @@ var TaskService = class {
         created_at: timestamp
       });
     }
+    if (cycleIdProvided && nextCycleId !== currentTask.cycle_id) {
+      actions.push({
+        type: "update_cycle",
+        reasoning: taskPatch.reasoning ?? null,
+        actor: actorValue ?? null,
+        created_at: timestamp
+      });
+    }
     if (deletedProvided && taskPatch.deleted_at !== currentTask.deleted_at) {
       actions.push({
         type: "delete",
@@ -14627,6 +14762,8 @@ var TaskService = class {
       });
     }
     let finalTaskContext = nextTaskContext;
+    const nextReadyAt = effectiveStatus === "ready" && !currentTask.ready_at ? timestamp : taskPatch.ready_at ?? currentTask.ready_at;
+    const nextStartedAt = effectiveStatus === "in-progress" && !currentTask.started_at ? timestamp : taskPatch.started_at ?? currentTask.started_at;
     if (effectiveStatus === "done" && finalTaskContext) {
       if (!nextTaskContextSummary) {
         nextTaskContextSummary = summarizeTaskContext(finalTaskContext);
@@ -14649,6 +14786,10 @@ var TaskService = class {
       task_context: finalTaskContext,
       task_context_summary: nextTaskContextSummary,
       validation_steps: nextValidationSteps,
+      cycle_id: nextCycleId,
+      impact_score: nextImpactScore,
+      ready_at: nextReadyAt,
+      started_at: nextStartedAt,
       actions,
       updated_at: timestamp
     };
@@ -14748,6 +14889,80 @@ var TaskService = class {
       }
     }
     return count;
+  }
+  async getFlowMetrics(taskId) {
+    const task = await this.getTask(taskId);
+    if (!task)
+      throw new Error(`Task ${taskId} not found`);
+    const actions = task.actions ?? [];
+    const completionAction = actions.find((a) => a.type === "completion");
+    const createdAtMs = task.created_at ? new Date(task.created_at).getTime() : void 0;
+    const completionMs = completionAction ? new Date(completionAction.created_at).getTime() : void 0;
+    const startedAtMs = task.started_at ? new Date(task.started_at).getTime() : void 0;
+    const readyAtMs = task.ready_at ? new Date(task.ready_at).getTime() : void 0;
+    const lead_time_ms = createdAtMs !== void 0 && completionMs !== void 0 ? completionMs - createdAtMs : void 0;
+    const cycle_time_ms = startedAtMs !== void 0 && completionMs !== void 0 ? completionMs - startedAtMs : void 0;
+    const time_in_status = {};
+    if (createdAtMs !== void 0) {
+      if (readyAtMs !== void 0) {
+        time_in_status["todo"] = readyAtMs - createdAtMs;
+        if (startedAtMs !== void 0) {
+          time_in_status["ready"] = startedAtMs - readyAtMs;
+        }
+      } else if (startedAtMs !== void 0) {
+        time_in_status["todo"] = startedAtMs - createdAtMs;
+      }
+    }
+    if (startedAtMs !== void 0) {
+      if (completionMs !== void 0) {
+        time_in_status["in-progress"] = completionMs - startedAtMs;
+      } else if (task.status === "in-progress") {
+        time_in_status["in-progress"] = Date.now() - startedAtMs;
+      }
+    }
+    return {
+      task_id: taskId,
+      lead_time_ms,
+      cycle_time_ms,
+      time_in_status
+    };
+  }
+  async getProjectFlowSummary() {
+    const tasks = await this.getTasks();
+    const now = Date.now();
+    const ms7d = 7 * 24 * 60 * 60 * 1e3;
+    const ms30d = 30 * 24 * 60 * 60 * 1e3;
+    const wip_count = tasks.filter((t) => t.status === "in-progress").length;
+    const doneTasks = tasks.filter((t) => t.status === "done");
+    const throughput_last_7d = doneTasks.filter((t) => {
+      const updatedAt = t.updated_at ? new Date(t.updated_at).getTime() : 0;
+      return now - updatedAt <= ms7d;
+    }).length;
+    const throughput_last_30d = doneTasks.filter((t) => {
+      const updatedAt = t.updated_at ? new Date(t.updated_at).getTime() : 0;
+      return now - updatedAt <= ms30d;
+    }).length;
+    const cycleTimes = doneTasks.map((t) => {
+      const completionAction = (t.actions ?? []).find((a) => a.type === "completion");
+      if (!t.started_at || !completionAction)
+        return null;
+      return new Date(completionAction.created_at).getTime() - new Date(t.started_at).getTime();
+    }).filter((v) => v !== null);
+    const avg_cycle_time_ms = cycleTimes.length > 0 ? Math.round(cycleTimes.reduce((a, b) => a + b, 0) / cycleTimes.length) : void 0;
+    const leadTimes = doneTasks.map((t) => {
+      const completionAction = (t.actions ?? []).find((a) => a.type === "completion");
+      if (!t.created_at || !completionAction)
+        return null;
+      return new Date(completionAction.created_at).getTime() - new Date(t.created_at).getTime();
+    }).filter((v) => v !== null);
+    const avg_lead_time_ms = leadTimes.length > 0 ? Math.round(leadTimes.reduce((a, b) => a + b, 0) / leadTimes.length) : void 0;
+    return {
+      wip_count,
+      throughput_last_7d,
+      throughput_last_30d,
+      avg_cycle_time_ms,
+      avg_lead_time_ms
+    };
   }
 };
 
@@ -15534,12 +15749,14 @@ var ENTITLEMENTS = {
     personalOnly: true,
     historyDays: 7,
     embeddings: false,
+    advancedRepoHistoryAnalysis: false,
     webhooks: false,
     baseSeats: 1,
     maxProjects: 1,
     maxDevices: 2,
     monthlyAiCredits: 500,
-    allowModelSelection: false
+    allowModelSelection: false,
+    cloudAgentRuns: false
   },
   pro: {
     tier: "pro",
@@ -15548,12 +15765,14 @@ var ENTITLEMENTS = {
     personalOnly: false,
     historyDays: null,
     embeddings: true,
+    advancedRepoHistoryAnalysis: true,
     webhooks: true,
     baseSeats: 1,
     maxProjects: 3,
     maxDevices: 5,
     monthlyAiCredits: 5e3,
-    allowModelSelection: true
+    allowModelSelection: false,
+    cloudAgentRuns: false
   },
   ultra: {
     tier: "ultra",
@@ -15562,12 +15781,14 @@ var ENTITLEMENTS = {
     personalOnly: false,
     historyDays: null,
     embeddings: true,
+    advancedRepoHistoryAnalysis: true,
     webhooks: true,
     baseSeats: 1,
     maxProjects: 50,
     maxDevices: null,
     monthlyAiCredits: 25e3,
-    allowModelSelection: true
+    allowModelSelection: true,
+    cloudAgentRuns: true
   }
 };
 function normalizeTier(value) {
@@ -15992,12 +16213,12 @@ var SyncService = class {
       includeCommitHashes: true
     });
     const secretMatches = [];
-    const addSecretMatch = (path10, value) => {
+    const addSecretMatch = (path11, value) => {
       if (!value)
         return;
       const types = detectSecrets(value);
       if (types.length > 0) {
-        secretMatches.push({ path: path10, types });
+        secretMatches.push({ path: path11, types });
       }
     };
     const contextPath = await this.getContextPath();
@@ -16193,6 +16414,101 @@ ${body}`;
   }
 };
 
+// ../../packages/core/dist/cycles.js
+import path10 from "path";
+import fs10 from "fs-extra";
+var CycleService = class {
+  async getCyclesDir() {
+    const vemDir = await getVemDir();
+    const dir = path10.join(vemDir, CYCLES_DIR);
+    await fs10.ensureDir(dir);
+    return dir;
+  }
+  cycleFilePath(dir, id) {
+    return path10.join(dir, `${id}.json`);
+  }
+  async getNextCycleId(dir) {
+    let maxNum = 0;
+    const entries = await fs10.readdir(dir).catch(() => []);
+    for (const entry of entries) {
+      const match = entry.match(/^CYCLE-(\d{3,})\.json$/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (!Number.isNaN(num) && num > maxNum) {
+          maxNum = num;
+        }
+      }
+    }
+    return `CYCLE-${String(maxNum + 1).padStart(3, "0")}`;
+  }
+  async createCycle(input) {
+    const dir = await this.getCyclesDir();
+    const id = await this.getNextCycleId(dir);
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+    const cycle = {
+      id,
+      name: input.name,
+      goal: input.goal,
+      appetite: input.appetite,
+      status: "planned",
+      start_at: input.start_at,
+      created_at: timestamp,
+      updated_at: timestamp
+    };
+    await fs10.writeJson(this.cycleFilePath(dir, id), cycle, { spaces: 2 });
+    return cycle;
+  }
+  async getCycles() {
+    const dir = await this.getCyclesDir();
+    const entries = await fs10.readdir(dir).catch(() => []);
+    const cycles = [];
+    for (const entry of entries) {
+      if (!entry.endsWith(".json"))
+        continue;
+      try {
+        const cycle = await fs10.readJson(path10.join(dir, entry));
+        if (cycle?.id)
+          cycles.push(cycle);
+      } catch {
+      }
+    }
+    return cycles.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }
+  async getCycle(id) {
+    const dir = await this.getCyclesDir();
+    const filePath = this.cycleFilePath(dir, id);
+    if (!await fs10.pathExists(filePath))
+      return null;
+    try {
+      return await fs10.readJson(filePath);
+    } catch {
+      return null;
+    }
+  }
+  async updateCycle(id, patch) {
+    const dir = await this.getCyclesDir();
+    const filePath = this.cycleFilePath(dir, id);
+    const current = await this.getCycle(id);
+    if (!current) {
+      throw new Error(`Cycle ${id} not found`);
+    }
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+    const updated = { ...current, ...patch, id, updated_at: timestamp };
+    if (patch.status === "active" && current.status !== "active") {
+      updated.start_at = updated.start_at ?? timestamp;
+    }
+    if (patch.status === "closed" && current.status !== "closed") {
+      updated.closed_at = updated.closed_at ?? timestamp;
+    }
+    await fs10.writeJson(filePath, updated, { spaces: 2 });
+    return updated;
+  }
+  async getActiveCycle() {
+    const cycles = await this.getCycles();
+    return cycles.find((c) => c.status === "active") ?? null;
+  }
+};
+
 // ../../packages/core/dist/telegram.js
 async function sendTelegramAlert(botToken, chatId, message) {
   if (!botToken || !chatId)
@@ -16213,7 +16529,7 @@ async function sendTelegramAlert(botToken, chatId, message) {
 
 // ../../packages/core/dist/usage-metrics.js
 import { join } from "path";
-import fs10 from "fs-extra";
+import fs11 from "fs-extra";
 var UsageMetricsService = class _UsageMetricsService {
   metricsPath = null;
   baseDir;
@@ -16413,8 +16729,8 @@ var UsageMetricsService = class _UsageMetricsService {
   async loadMetrics() {
     try {
       const metricsPath = await this.getMetricsPath();
-      if (await fs10.pathExists(metricsPath)) {
-        const content = await fs10.readFile(metricsPath, "utf-8");
+      if (await fs11.pathExists(metricsPath)) {
+        const content = await fs11.readFile(metricsPath, "utf-8");
         return JSON.parse(content);
       }
     } catch (_error) {
@@ -16433,7 +16749,7 @@ var UsageMetricsService = class _UsageMetricsService {
    */
   async saveMetrics(data) {
     const metricsPath = await this.getMetricsPath();
-    await fs10.writeFile(metricsPath, JSON.stringify(data, null, 2), "utf-8");
+    await fs11.writeFile(metricsPath, JSON.stringify(data, null, 2), "utf-8");
   }
   isCloudSyncEnabled() {
     const disabled = (process.env.VEM_DISABLE_METRICS || "").toLowerCase();
@@ -16922,8 +17238,12 @@ var WorkflowGuideService = class {
 };
 
 export {
+  encryptProviderKey,
+  decryptProviderKey,
+  maskProviderKey,
   VEM_DIR,
   TASKS_DIR,
+  CYCLES_DIR,
   DECISIONS_DIR,
   CHANGELOG_DIR,
   TASKS_FILE,
@@ -16970,6 +17290,7 @@ export {
   KNOWN_AGENT_INSTRUCTION_FILES,
   computeSnapshotHash,
   SyncService,
+  CycleService,
   sendTelegramAlert,
   UsageMetricsService,
   validatePasswordStrength,
@@ -16977,4 +17298,4 @@ export {
   WebhookService,
   WorkflowGuideService
 };
-//# sourceMappingURL=chunk-EYHLLMFI.js.map
+//# sourceMappingURL=chunk-A36XSES5.js.map

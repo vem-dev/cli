@@ -5,8 +5,10 @@ import { Command } from "commander";
 
 import { registerAgentCommands } from "./commands/agent.js";
 import { registerAuthCommands } from "./commands/auth.js";
+import { registerCycleCommands } from "./commands/cycle.js";
 import { registerMaintenanceCommands } from "./commands/maintenance.js";
 import { registerProjectCommands } from "./commands/project.js";
+import { registerRunnerCommands } from "./commands/runner.js";
 import { registerSearchCommands } from "./commands/search.js";
 import { registerSessionsCommands } from "./commands/sessions.js";
 import { registerSetupCommands } from "./commands/setup.js";
@@ -79,9 +81,11 @@ program.hook("preAction", async (_thisCommand, actionCommand) => {
 });
 
 registerProjectCommands(program);
+registerRunnerCommands(program);
 registerSyncCommands(program);
 registerSetupCommands(program);
 registerTaskCommands(program);
+registerCycleCommands(program);
 registerAuthCommands(program);
 registerSearchCommands(program);
 registerAgentCommands(program);

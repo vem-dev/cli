@@ -58,13 +58,14 @@ type AgentTask = Awaited<ReturnType<typeof taskService.getTasks>>[number] & {
 	db_id?: string;
 };
 
-const AGENT_TASK_STATUSES = new Set(["todo", "in-progress", "blocked", "done"]);
+const AGENT_TASK_STATUSES = new Set(["todo", "in-review", "in-progress", "blocked", "done"]);
 const MAX_CHILD_TASKS_IN_PROMPT = 12;
 const TASK_STATUS_ORDER: Record<AgentTask["status"], number> = {
-	"in-progress": 0,
-	todo: 1,
-	blocked: 2,
-	done: 3,
+	"in-review": 0,
+	"in-progress": 1,
+	todo: 2,
+	blocked: 3,
+	done: 4,
 };
 
 const debugAgentSync = (...messages: string[]) => {
@@ -1108,8 +1109,12 @@ This file is generated for the active task. Update task context via:
 									"; ",
 								)}${extraChildCount > 0 ? `; plus ${extraChildCount} more` : ""}. Treat these as part of implementation scope and update them in \`vem_update.tasks\` when progress is made.`
 						: "";
+				const runnerInstructions = process.env.VEM_RUNNER_INSTRUCTIONS?.trim();
+				const runnerInstructionsBlock = runnerInstructions
+					? ` Additional web-run instructions: ${runnerInstructions}.`
+					: "";
 
-				const agentPrompt = `You are working on task ${activeTask?.id || "N/A"}.${childTaskPromptBlock} Read .vem/current_context.md for project context and .vem/task_context.md for task-specific context. STRICT MEMORY: if you make changes, you must provide a vem_update block that includes context (full updated CONTEXT.md), current_state, changelog_append, decisions_append, and tasks (array — use the field name "tasks", not "task_update": [{ "id": "${activeTask?.id || "TASK-ID"}", "status": "done", "evidence": [...], "task_context_summary": "..." }]). Complete the task using these instructions. When completing tasks, include your agent name and confirm required validation steps (build/tests) in evidence.`;
+				const agentPrompt = `You are working on task ${activeTask?.id || "N/A"}.${childTaskPromptBlock}${runnerInstructionsBlock} Read .vem/current_context.md for project context and .vem/task_context.md for task-specific context. STRICT MEMORY: if you make changes, you must provide a vem_update block that includes context (full updated CONTEXT.md), current_state, changelog_append, decisions_append, and tasks (array — use the field name "tasks", not "task_update": [{ "id": "${activeTask?.id || "TASK-ID"}", "status": "done", "evidence": [...], "task_context_summary": "..." }]). Complete the task using these instructions. When completing tasks, include your agent name and confirm required validation steps (build/tests) in evidence.`;
 
 				// Tool-specific injections
 				if (baseCmd === "gemini" || baseCmd === "echo") {

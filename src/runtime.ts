@@ -40,6 +40,7 @@ export {
 	trackHelpUsageFromArgv,
 } from "./runtime/metrics.js";
 export {
+	cycleService,
 	metricsService,
 	parseCommaList,
 	resolveActorName,
@@ -61,6 +62,4 @@ export {
 	backfillCommitHistory,
 	performPush,
 	processQueue,
-	triggerRemoteHistoryReindex,
-	triggerRemoteReindex,
 } from "./runtime/sync.js";

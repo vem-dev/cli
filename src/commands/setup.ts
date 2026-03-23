@@ -16,7 +16,6 @@ import prompts from "prompts";
 
 import {
 	API_URL,
-	backfillCommitHistory,
 	buildDeviceHeaders,
 	computeVemHash,
 	hasUncommittedChanges,
@@ -24,7 +23,6 @@ import {
 	metricsService,
 	taskService,
 	trackCommandUsage,
-	triggerRemoteHistoryReindex,
 	tryAuthenticatedKey,
 	validateProject,
 } from "../runtime.js";
@@ -358,27 +356,10 @@ export function registerSetupCommands(program: Command) {
 						);
 					}
 
-					console.log(chalk.blue("🔄 Backfilling commit history..."));
-					try {
-						await backfillCommitHistory({
-							configService,
-							apiKey,
-							projectId: resolvedProjectId,
-						});
-						await triggerRemoteHistoryReindex({
-							configService,
-							apiKey,
-							projectId: resolvedProjectId,
-						});
-					} catch (error) {
-						const message =
-							error instanceof Error ? error.message : String(error);
-						console.log(chalk.yellow(`⚠ Reindex skipped: ${message}`));
-					}
 				} else if (!apiKey) {
 					console.log(
 						chalk.gray(
-							"Tip: Run `vem reindex` after `vem login` + `vem link` to backfill history.",
+							"Tip: Use the web dashboard project settings to run reindexing after `vem login` + `vem link`.",
 						),
 					);
 				}

@@ -24,6 +24,10 @@ export function registerTaskCommands(program: Command) {
 	const formatTaskStatusLabel = (status: string, deletedAt?: string) => {
 		if (deletedAt) return chalk.red("DELETED");
 		switch (status) {
+			case "ready":
+				return chalk.cyan("READY");
+			case "in-review":
+				return chalk.magenta("IN REVW");
 			case "in-progress":
 				return chalk.blue("IN PROG");
 			case "blocked":
@@ -52,7 +56,7 @@ export function registerTaskCommands(program: Command) {
 		id: string;
 		db_id?: string;
 		title: string;
-		status: "todo" | "in-progress" | "blocked" | "done";
+		status: "todo" | "ready" | "in-review" | "in-progress" | "blocked" | "done";
 		assignee?: string;
 		priority?: string;
 		tags?: string[];
@@ -82,10 +86,16 @@ export function registerTaskCommands(program: Command) {
 		github_issue_number?: number;
 		deleted_at?: string;
 		validation_steps?: string[];
+		cycle_id?: string;
+		impact_score?: number;
+		ready_at?: string;
+		started_at?: string;
 	};
 
 	const TASK_STATUS_VALUES = new Set<DisplayTask["status"]>([
 		"todo",
+		"ready",
+		"in-review",
 		"in-progress",
 		"blocked",
 		"done",
@@ -441,7 +451,7 @@ export function registerTaskCommands(program: Command) {
 		description?: string;
 		priority: "low" | "medium" | "high" | "critical";
 		tags?: string[];
-		type?: "feature" | "bug" | "chore";
+		type?: "feature" | "bug" | "chore" | "spike" | "enabler";
 		estimate_hours?: number;
 		depends_on?: string[];
 		blocked_by?: string[];
@@ -711,26 +721,30 @@ export function registerTaskCommands(program: Command) {
 		.option("--deleted", "Show only deleted tasks")
 		.option(
 			"--status <status>",
-			"Filter by status (todo, in-progress, blocked, done)",
+			"Filter by status (todo, ready, in-review, in-progress, blocked, done)",
 		)
 		.option("--done", "Show only completed tasks")
+		.option("--cycle <id>", "Filter by cycle ID")
+		.option("--flow", "Show flow metrics column (cycle time)")
 		.action(async (options) => {
 			await trackCommandUsage("task list");
 			const tasks = await getDisplayTasks({ includeDeleted: true });
 			const status =
 				typeof options.status === "string" ? options.status : undefined;
-			const validStatuses = new Set(["todo", "in-progress", "blocked", "done"]);
+			const cycleFilter =
+				typeof options.cycle === "string" ? options.cycle.trim() : undefined;
+			const validStatuses = new Set(["todo", "ready", "in-review", "in-progress", "blocked", "done"]);
 			if (status && !validStatuses.has(status)) {
 				console.error(
 					chalk.red(
-						`Invalid status "${status}". Use: todo, in-progress, blocked, done.`,
+						`Invalid status "${status}". Use: todo, ready, in-review, in-progress, blocked, done.`,
 					),
 				);
 				process.exitCode = 1;
 				return;
 			}
 
-			const filtered = status
+			let filtered = status
 				? tasks.filter((t) => t.status === status && !t.deleted_at)
 				: options.deleted
 					? tasks.filter((t) => t.deleted_at)
@@ -740,19 +754,50 @@ export function registerTaskCommands(program: Command) {
 							? tasks
 							: tasks.filter((t) => t.status !== "done" && !t.deleted_at);
 
+			if (cycleFilter) {
+				filtered = filtered.filter((t) => t.cycle_id === cycleFilter);
+			}
+
+			const showFlow = !!options.flow;
+
+			const headCols = showFlow
+				? ["ID", "Status", "Title", "Cycle", "Score", "Assignee", "Priority"]
+				: ["ID", "Status", "Title", "Assignee", "Priority"];
 			const table = new Table({
-				head: ["ID", "Status", "Title", "Assignee", "Priority"],
+				head: headCols,
 				style: { head: ["cyan"] },
 			});
 
+			const fmtMs = (ms?: number) => {
+				if (!ms) return chalk.gray("-");
+				const days = Math.floor(ms / 86400000);
+				const hrs = Math.floor((ms % 86400000) / 3600000);
+				return days > 0 ? chalk.white(`${days}d ${hrs}h`) : chalk.white(`${hrs}h`);
+			};
+
 			filtered.forEach((t) => {
-				table.push([
-					chalk.white(t.id),
-					formatTaskStatusLabel(t.status, t.deleted_at),
-					t.title,
-					chalk.gray(t.assignee || "-"),
-					formatTaskPriority(t.priority),
-				]);
+				if (showFlow) {
+					const cycleTime = t.started_at && t.status === "done"
+						? Date.now() - new Date(t.started_at).getTime()
+						: undefined;
+					table.push([
+						chalk.white(t.id),
+						formatTaskStatusLabel(t.status, t.deleted_at),
+						t.title,
+						t.cycle_id ? chalk.cyan(t.cycle_id) : chalk.gray("-"),
+						t.impact_score !== undefined ? chalk.yellow(String(Math.round(t.impact_score))) : chalk.gray("-"),
+						chalk.gray(t.assignee || "-"),
+						formatTaskPriority(t.priority),
+					]);
+				} else {
+					table.push([
+						chalk.white(t.id),
+						formatTaskStatusLabel(t.status, t.deleted_at),
+						t.title,
+						chalk.gray(t.assignee || "-"),
+						formatTaskPriority(t.priority),
+					]);
+				}
 			});
 
 			console.log(table.toString());
@@ -1156,7 +1201,7 @@ export function registerTaskCommands(program: Command) {
 		)
 		.option("-d, --description <description>", "Task description")
 		.option("--tags <tags>", "Comma-separated tags")
-		.option("--type <type>", "Task type (feature, bug, chore)")
+		.option("--type <type>", "Task type (feature, bug, chore, spike, enabler)")
 		.option("--estimate-hours <hours>", "Estimated hours (e.g. 2.5)")
 		.option("--depends-on <ids>", "Comma-separated task IDs")
 		.option("--blocked-by <ids>", "Comma-separated task IDs")
@@ -1170,6 +1215,8 @@ export function registerTaskCommands(program: Command) {
 			"--validation <steps>",
 			'Comma-separated validation steps (e.g. "pnpm build, pnpm test")',
 		)
+		.option("--cycle <id>", "Assign to a cycle (e.g. CYCLE-001)")
+		.option("--impact-score <score>", "Impact score 0-100 (RICE-based priority)")
 		.option("--actor <name>", "Actor name for task creation")
 		.option("-r, --reasoning <reasoning>", "Reasoning for creation")
 		.action(async (title, options) => {
@@ -1219,6 +1266,12 @@ export function registerTaskCommands(program: Command) {
 					typeof options.actor === "string" ? options.actor : undefined;
 				let reasoningInput =
 					typeof options.reasoning === "string" ? options.reasoning : undefined;
+				const cycleIdInput =
+					typeof options.cycle === "string" ? options.cycle.trim() : undefined;
+				const impactScoreInput =
+					typeof options.impactScore === "string"
+						? Number.parseFloat(options.impactScore)
+						: undefined;
 
 				const runWizard = !taskTitle;
 				if (runWizard) {
@@ -1365,7 +1418,7 @@ export function registerTaskCommands(program: Command) {
 								},
 							},
 							{
-								message: "Type (feature, bug, chore; optional):",
+								message: "Type (feature, bug, chore, spike, enabler; optional):",
 								getInitial: () => typeInput,
 								setValue: (value) => {
 									typeInput = value;
@@ -1376,11 +1429,13 @@ export function registerTaskCommands(program: Command) {
 									if (
 										normalized === "feature" ||
 										normalized === "bug" ||
-										normalized === "chore"
+										normalized === "chore" ||
+										normalized === "spike" ||
+										normalized === "enabler"
 									) {
 										return true;
 									}
-									return "Type must be feature, bug, or chore.";
+									return "Type must be feature, bug, chore, spike, or enabler.";
 								},
 							},
 							{
@@ -1585,14 +1640,18 @@ export function registerTaskCommands(program: Command) {
 					normalizedType &&
 					normalizedType !== "feature" &&
 					normalizedType !== "bug" &&
-					normalizedType !== "chore"
+					normalizedType !== "chore" &&
+					normalizedType !== "spike" &&
+					normalizedType !== "enabler"
 				) {
-					throw new Error("type must be feature, bug, or chore.");
+					throw new Error("type must be feature, bug, chore, spike, or enabler.");
 				}
 				const taskType =
 					normalizedType === "feature" ||
 					normalizedType === "bug" ||
-					normalizedType === "chore"
+					normalizedType === "chore" ||
+					normalizedType === "spike" ||
+					normalizedType === "enabler"
 						? normalizedType
 						: undefined;
 
@@ -1712,6 +1771,11 @@ export function registerTaskCommands(program: Command) {
 						due_at: dueAt,
 						validation_steps: validationSteps,
 						actor: actorName,
+						cycle_id: cycleIdInput,
+						impact_score:
+							impactScoreInput !== undefined && !Number.isNaN(impactScoreInput)
+								? impactScoreInput
+								: undefined,
 					},
 				);
 				console.log(
@@ -1731,7 +1795,7 @@ export function registerTaskCommands(program: Command) {
 		.command("update <id>")
 		.description("Update task metadata")
 		.option("--tags <tags>", "Comma-separated tags")
-		.option("--type <type>", "Task type (feature, bug, chore)")
+		.option("--type <type>", "Task type (feature, bug, chore, spike, enabler)")
 		.option("--estimate-hours <hours>", "Estimated hours (e.g. 2.5)")
 		.option("--depends-on <ids>", "Comma-separated task IDs")
 		.option("--blocked-by <ids>", "Comma-separated task IDs")
@@ -1745,6 +1809,8 @@ export function registerTaskCommands(program: Command) {
 			"--validation <steps>",
 			"Set validation steps (comma-separated). Use empty string to clear.",
 		)
+		.option("--cycle <id>", "Assign to a cycle (e.g. CYCLE-001)")
+		.option("--impact-score <score>", "Impact score 0-100 (RICE-based priority)")
 		.option("--actor <name>", "Actor name for task update")
 		.option("-r, --reasoning <reasoning>", "Reasoning for update")
 		.action(async (id, options) => {
@@ -1774,6 +1840,12 @@ export function registerTaskCommands(program: Command) {
 						? Number.parseInt(options.order, 10)
 						: undefined;
 				const actorName = resolveActorName(options.actor);
+				const cycleIdUpdate =
+					typeof options.cycle === "string" ? options.cycle.trim() : undefined;
+				const impactScoreUpdate =
+					typeof options.impactScore === "string"
+						? Number.parseFloat(options.impactScore)
+						: undefined;
 
 				const remoteUpdated = await updateRemoteTaskMeta(id, {
 					tags: parsedTags,
@@ -1807,6 +1879,11 @@ export function registerTaskCommands(program: Command) {
 						validation_steps: parsedValidation,
 						reasoning: options.reasoning,
 						actor: actorName,
+						cycle_id: cycleIdUpdate,
+						impact_score:
+							impactScoreUpdate !== undefined && !Number.isNaN(impactScoreUpdate)
+								? impactScoreUpdate
+								: undefined,
 					});
 				}
 
@@ -2447,6 +2524,169 @@ export function registerTaskCommands(program: Command) {
 				console.error(
 					chalk.red(`Failed to show task sessions: ${error.message}`),
 				);
+			}
+		});
+
+	taskCmd
+		.command("flow [id]")
+		.description(
+			"Show flow metrics for a task or project-level summary (throughput, cycle time, WIP)",
+		)
+		.action(async (id) => {
+			await trackCommandUsage("task flow");
+			try {
+				if (id) {
+					const task = await taskService.getTask(id);
+					if (!task) {
+						console.error(chalk.red(`Task ${id} not found.`));
+						return;
+					}
+					const metrics = await taskService.getFlowMetrics(id);
+					const fmtMs = (ms?: number) => {
+						if (!ms) return chalk.gray("—");
+						const days = Math.floor(ms / 86400000);
+						const hrs = Math.floor((ms % 86400000) / 3600000);
+						const mins = Math.floor((ms % 3600000) / 60000);
+						if (days > 0) return chalk.white(`${days}d ${hrs}h`);
+						if (hrs > 0) return chalk.white(`${hrs}h ${mins}m`);
+						return chalk.white(`${mins}m`);
+					};
+					console.log(chalk.bold(`\n⏱  Flow Metrics: ${id} — ${task.title}\n`));
+					console.log(`  ${chalk.gray("Lead time (created → done):")}  ${fmtMs(metrics.lead_time_ms)}`);
+					console.log(`  ${chalk.gray("Cycle time (started → done):")} ${fmtMs(metrics.cycle_time_ms)}`);
+					if (Object.keys(metrics.time_in_status).length > 0) {
+						console.log(chalk.gray("\n  Time in each status:"));
+						for (const [status, ms] of Object.entries(metrics.time_in_status)) {
+							console.log(`    ${chalk.cyan(status.padEnd(12))} ${fmtMs(ms)}`);
+						}
+					}
+					console.log();
+				} else {
+					const summary = await taskService.getProjectFlowSummary();
+					const fmtMs = (ms?: number) => {
+						if (!ms) return chalk.gray("—");
+						const days = Math.floor(ms / 86400000);
+						const hrs = Math.floor((ms % 86400000) / 3600000);
+						if (days > 0) return chalk.white(`${days}d ${hrs}h`);
+						return chalk.white(`${hrs}h`);
+					};
+					console.log(chalk.bold("\n📊  Project Flow Summary\n"));
+					console.log(`  ${chalk.gray("WIP (active tasks):")}         ${chalk.yellow(String(summary.wip_count))}`);
+					console.log(`  ${chalk.gray("Throughput (last 7d):")}        ${chalk.white(String(summary.throughput_last_7d))} tasks`);
+					console.log(`  ${chalk.gray("Throughput (last 30d):")}       ${chalk.white(String(summary.throughput_last_30d))} tasks`);
+					console.log(`  ${chalk.gray("Avg cycle time:")}              ${fmtMs(summary.avg_cycle_time_ms)}`);
+					console.log(`  ${chalk.gray("Avg lead time:")}               ${fmtMs(summary.avg_lead_time_ms)}`);
+					console.log();
+				}
+			} catch (error: any) {
+				console.error(chalk.red(`Failed to get flow metrics: ${error.message}`));
+			}
+		});
+
+	taskCmd
+		.command("score [id]")
+		.description("Show or set the impact score (0-100) for a task")
+		.option("--set <score>", "Set impact score manually (0-100)")
+		.option("-r, --reasoning <reasoning>", "Reasoning for score change")
+		.action(async (id, options) => {
+			await trackCommandUsage("task score");
+			try {
+				if (!id) {
+					const tasks = await taskService.getTasks();
+					const unscored = tasks.filter(
+						(t) => t.impact_score === undefined && t.status !== "done" && !t.deleted_at,
+					);
+					if (unscored.length === 0) {
+						console.log(chalk.green("\n✔ All active tasks have impact scores.\n"));
+						return;
+					}
+					const table = new Table({
+						head: ["ID", "Title", "Priority", "Score"],
+						style: { head: ["cyan"] },
+					});
+					const all = tasks.filter((t) => t.status !== "done" && !t.deleted_at);
+					for (const t of all) {
+						table.push([
+							chalk.white(t.id),
+							t.title,
+							formatTaskPriority(t.priority),
+							t.impact_score !== undefined
+								? chalk.yellow(String(Math.round(t.impact_score)))
+								: chalk.gray("—"),
+						]);
+					}
+					console.log(chalk.bold("\n🎯  Impact Scores\n"));
+					console.log(table.toString());
+					console.log(chalk.gray(`\n  Unscored: ${unscored.length} task(s). Use: vem task score <id> --set <0-100>\n`));
+					return;
+				}
+
+				const task = await taskService.getTask(id);
+				if (!task) {
+					console.error(chalk.red(`Task ${id} not found.`));
+					return;
+				}
+
+				if (options.set !== undefined) {
+					const score = Number.parseFloat(options.set);
+					if (Number.isNaN(score) || score < 0 || score > 100) {
+						console.error(chalk.red("Score must be a number between 0 and 100."));
+						process.exitCode = 1;
+						return;
+					}
+					await taskService.updateTask(id, {
+						impact_score: score,
+						reasoning: options.reasoning,
+					});
+					console.log(chalk.green(`\n✔ Impact score for ${id} set to ${score}\n`));
+				} else {
+					console.log(chalk.bold(`\n🎯  ${id}: ${task.title}`));
+					console.log(`  Impact score: ${task.impact_score !== undefined ? chalk.yellow(String(Math.round(task.impact_score))) : chalk.gray("not set")}`);
+					console.log(chalk.gray(`  Set with: vem task score ${id} --set <0-100>\n`));
+				}
+			} catch (error: any) {
+				console.error(chalk.red(`Failed to manage score: ${error.message}`));
+			}
+		});
+
+	taskCmd
+		.command("ready [id]")
+		.description("Mark a task as ready (refined and ready to start)")
+		.option("-r, --reasoning <reasoning>", "Reasoning for marking ready")
+		.option("--actor <name>", "Actor name")
+		.action(async (id, options) => {
+			await trackCommandUsage("task ready");
+			try {
+				if (!id) {
+					const tasks = await taskService.getTasks();
+					const todos = tasks.filter(
+						(t) => t.status === "todo" && !t.deleted_at,
+					);
+					if (todos.length === 0) {
+						console.error(chalk.yellow("No todo tasks found."));
+						return;
+					}
+					const response = await prompts({
+						type: "select",
+						name: "value",
+						message: "Which task is ready to start?",
+						choices: todos.map((t) => ({
+							title: `${t.id}: ${t.title}`,
+							value: t.id,
+						})),
+					});
+					if (!response.value) return;
+					id = response.value as string;
+				}
+				const actorName = resolveActorName(options.actor);
+				await taskService.updateTask(id, {
+					status: "ready",
+					reasoning: options.reasoning || "Marked as refined and ready to start.",
+					actor: actorName,
+				});
+				console.log(chalk.cyan(`\n✔ Task ${id} marked as ready\n`));
+			} catch (error: any) {
+				console.error(chalk.red(`Failed to mark task ready: ${error.message}`));
 			}
 		});
 }

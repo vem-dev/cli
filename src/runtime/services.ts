@@ -1,4 +1,5 @@
 import {
+	CycleService,
 	SyncService,
 	TaskService,
 	UsageMetricsService,
@@ -6,6 +7,7 @@ import {
 } from "@vem/core";
 
 const taskService = new TaskService();
+const cycleService = new CycleService();
 const syncService = new SyncService();
 const metricsService = new UsageMetricsService();
 const workflowGuide = new WorkflowGuideService(metricsService);
@@ -34,6 +36,7 @@ const resolveActorName = (value?: string) => {
 
 export {
 	TASK_CONTEXT_FILE,
+	cycleService,
 	metricsService,
 	parseCommaList,
 	resolveActorName,

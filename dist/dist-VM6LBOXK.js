@@ -4,7 +4,9 @@ import {
   CONFIG_FILE,
   CONTEXT_FILE,
   CURRENT_STATE_FILE,
+  CYCLES_DIR,
   ConfigService,
+  CycleService,
   DECISIONS_DIR,
   DECISIONS_FILE,
   DEFAULT_TIER,
@@ -28,7 +30,9 @@ import {
   commonEnvSchema,
   computeSessionStats,
   computeSnapshotHash,
+  decryptProviderKey,
   detectSecrets,
+  encryptProviderKey,
   ensureVemDir,
   ensureVemFiles,
   formatVemPack,
@@ -42,6 +46,7 @@ import {
   isVemInitialized,
   listAllAgentSessions,
   logger,
+  maskProviderKey,
   normalizeGithubPrivateKey,
   normalizeTier,
   parseVemUpdateBlock,
@@ -53,7 +58,7 @@ import {
   validateEnv,
   validatePasswordStrength,
   validateWebhookUrl
-} from "./chunk-EYHLLMFI.js";
+} from "./chunk-A36XSES5.js";
 import {
   computeCopilotSessionStats,
   getCopilotSessionsDir,
@@ -77,7 +82,9 @@ export {
   CONFIG_FILE,
   CONTEXT_FILE,
   CURRENT_STATE_FILE,
+  CYCLES_DIR,
   ConfigService,
+  CycleService,
   DECISIONS_DIR,
   DECISIONS_FILE,
   DEFAULT_TIER,
@@ -104,7 +111,9 @@ export {
   computeGeminiSessionStats,
   computeSessionStats,
   computeSnapshotHash,
+  decryptProviderKey,
   detectSecrets,
+  encryptProviderKey,
   ensureVemDir,
   ensureVemFiles,
   formatVemPack,
@@ -124,6 +133,7 @@ export {
   listCopilotSessions,
   listGeminiSessions,
   logger,
+  maskProviderKey,
   normalizeGithubPrivateKey,
   normalizeTier,
   parseVemUpdateBlock,
@@ -137,4 +147,4 @@ export {
   validatePasswordStrength,
   validateWebhookUrl
 };
-//# sourceMappingURL=dist-FRSPOVEU.js.map
+//# sourceMappingURL=dist-VM6LBOXK.js.map

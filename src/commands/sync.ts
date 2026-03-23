@@ -32,8 +32,6 @@ import {
 	syncService,
 	taskService,
 	trackCommandUsage,
-	triggerRemoteHistoryReindex,
-	triggerRemoteReindex,
 	WEB_URL,
 } from "../runtime.js";
 
@@ -492,109 +490,6 @@ export function registerSyncCommands(program: Command) {
 				process.exitCode = 1;
 			}
 		});
-	program
-		.command("reindex")
-		.description("Backfill commit history and trigger repo indexing")
-		.option("--limit <n>", "Number of commits to backfill", "200")
-		.option("--all", "Backfill full commit history")
-		.option(
-			"--mode <mode>",
-			"Indexing mode for remote repo (full or incremental)",
-			"full",
-		)
-		.option("--commit <hash>", "Specific commit hash for incremental indexing")
-		.option("--branch <name>", "Branch name for indexing")
-		.option("--history", "Backfill commit diffs across history")
-		.option("--skip-backfill", "Skip local commit backfill")
-		.option(
-			"--use-credits",
-			"Use your credit balance to re-index an already indexed repo (costs 100 credits)",
-		)
-		.action(async (options) => {
-			try {
-				const configService = new ConfigService();
-				const apiKey = await ensureAuthenticated(configService);
-				const projectId = await configService.getProjectId();
-
-				if (!projectId) {
-					console.error(
-						chalk.red("\n✖ Project not linked. Run `vem link` first.\n"),
-					);
-					return;
-				}
-
-				if (!options.skipBackfill) {
-					console.log(chalk.blue("🔄 Backfilling commit history..."));
-					const limit =
-						typeof options.limit === "string"
-							? Number.parseInt(options.limit, 10)
-							: undefined;
-					await backfillCommitHistory({
-						configService,
-						apiKey,
-						projectId,
-						limit: Number.isFinite(limit) ? limit : 200,
-						all: Boolean(options.all),
-						logResult: !options.history,
-					});
-				}
-
-				if (options.history) {
-					console.log(chalk.blue("📚 Triggering history reindex..."));
-					const limit =
-						typeof options.limit === "string"
-							? Number.parseInt(options.limit, 10)
-							: undefined;
-					await triggerRemoteHistoryReindex({
-						configService,
-						apiKey,
-						projectId,
-						limit: options.all
-							? undefined
-							: Number.isFinite(limit)
-								? limit
-								: undefined,
-					});
-					console.log(
-						chalk.blue(
-							`🔎 Check progress: ${WEB_URL}/project/${projectId}/settings`,
-						),
-					);
-				} else {
-					console.log(chalk.blue("📚 Triggering remote reindex..."));
-					if (options.useCredits) {
-						console.log(
-							chalk.yellow("⚡ Using 100 credits from your balance."),
-						);
-					}
-					await triggerRemoteReindex({
-						configService,
-						apiKey,
-						projectId,
-						mode: options.mode,
-						commit: options.commit,
-						branch: options.branch,
-						useCredits: Boolean(options.useCredits),
-					});
-				}
-			} catch (error) {
-				if (error instanceof Error) {
-					if (error.message.includes("402")) {
-						console.error(
-							chalk.yellow(
-								"\n⚠ Reindex requires --use-credits flag for an already-indexed repo.\n" +
-									"  Run: vem reindex --use-credits  (costs 100 credits)\n",
-							),
-						);
-					} else {
-						console.error(chalk.red("\n✖ Reindex Failed:"), error.message);
-					}
-				} else {
-					console.error(chalk.red("\n✖ Reindex Failed:"), String(error));
-				}
-			}
-		});
-
 	program
 		.command("queue")
 		.description("Manage offline snapshot queue")
