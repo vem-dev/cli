@@ -1222,13 +1222,24 @@ This file is generated for the active task. Update task context via:
 					const hasPrompt = !!firstNonOption || hasInteractiveFlag;
 
 					if (!hasPrompt) {
-						console.log(chalk.cyan("Auto-injecting context via -i flag..."));
 						const childScopeText =
 							scopedChildTaskIds.length > 0
 								? ` and child tasks ${scopedChildTaskIds.join(", ")}`
 								: "";
 						const initialPrompt = `${agentPrompt}\n\nYour task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.\n\nStart by reading .vem/task_context.md and .vem/current_context.md for task and project context. Then explore the repository structure (list directories, read key files like package.json, README, and relevant source files) to understand the codebase before writing any code. Implement all required changes, run any existing tests or builds to verify, then provide the vem_update block.`;
-						launchArgs = [...launchArgs, "-i", initialPrompt];
+
+						if (options.autoExit) {
+							// Non-interactive (sandbox/cloud) mode: use -p + --yolo so copilot
+							// runs fully autonomously without needing a TTY for the plan menu.
+							// This matches how run-task.sh invokes copilot locally.
+							console.log(chalk.cyan("Auto-injecting context via -p flag (autonomous mode)..."));
+							launchArgs = [...launchArgs, "-p", initialPrompt, "--yolo"];
+						} else {
+							// Interactive (local terminal) mode: use -i so the user sees the
+							// plan confirmation menu and can review before copilot executes.
+							console.log(chalk.cyan("Auto-injecting context via -i flag..."));
+							launchArgs = [...launchArgs, "-i", initialPrompt];
+						}
 					} else {
 						console.log(
 							chalk.cyan(
