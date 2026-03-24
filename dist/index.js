@@ -1777,7 +1777,9 @@ This file is generated for the active task. Update task context via:
           const childScopeText = scopedChildTaskIds.length > 0 ? ` and child tasks ${scopedChildTaskIds.join(", ")}` : "";
           const initialPrompt = `${agentPrompt}
 
-Read .vem/current_context.md and .vem/task_context.md, then start working on task ${activeTask?.id}: ${activeTask?.title}${childScopeText}`;
+Your task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.
+
+Start by reading .vem/task_context.md and .vem/current_context.md for task and project context. Then explore the repository structure (list directories, read key files like package.json, README, and relevant source files) to understand the codebase before writing any code. Implement all required changes, run any existing tests or builds to verify, then provide the vem_update block.`;
           launchArgs = [...launchArgs, "-i", initialPrompt];
         } else {
           console.log(
@@ -8252,11 +8254,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.40",
+  release: "0.1.41",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.40").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.41").addHelpText(
   "after",
   `
 ${chalk18.bold("\n\u26A1 Power Workflows:")}

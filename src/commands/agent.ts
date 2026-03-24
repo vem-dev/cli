@@ -1227,7 +1227,7 @@ This file is generated for the active task. Update task context via:
 							scopedChildTaskIds.length > 0
 								? ` and child tasks ${scopedChildTaskIds.join(", ")}`
 								: "";
-						const initialPrompt = `${agentPrompt}\n\nRead .vem/current_context.md and .vem/task_context.md, then start working on task ${activeTask?.id}: ${activeTask?.title}${childScopeText}`;
+						const initialPrompt = `${agentPrompt}\n\nYour task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.\n\nStart by reading .vem/task_context.md and .vem/current_context.md for task and project context. Then explore the repository structure (list directories, read key files like package.json, README, and relevant source files) to understand the codebase before writing any code. Implement all required changes, run any existing tests or builds to verify, then provide the vem_update block.`;
 						launchArgs = [...launchArgs, "-i", initialPrompt];
 					} else {
 						console.log(
