@@ -1826,8 +1826,13 @@ Start by reading .vem/task_context.md and .vem/current_context.md for task and p
       let startError = null;
       let exitCode = null;
       await new Promise((resolve2) => {
-        child.on("exit", (code) => {
+        child.on("exit", (code, signal) => {
           exitCode = code;
+          if (code === null && signal) {
+            console.error(
+              chalk7.red(`Agent process killed by signal: ${signal}`)
+            );
+          }
           resolve2();
         });
         child.on("error", (err) => {
@@ -8270,11 +8275,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.43",
+  release: "0.1.44",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.43").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.44").addHelpText(
   "after",
   `
 ${chalk18.bold("\n\u26A1 Power Workflows:")}

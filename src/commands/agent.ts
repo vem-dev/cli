@@ -1276,8 +1276,13 @@ This file is generated for the active task. Update task context via:
 				let startError: NodeJS.ErrnoException | null = null;
 				let exitCode: number | null = null;
 				await new Promise<void>((resolve) => {
-					child.on("exit", (code) => {
+					child.on("exit", (code, signal) => {
 						exitCode = code;
+						if (code === null && signal) {
+							console.error(
+								chalk.red(`Agent process killed by signal: ${signal}`),
+							);
+						}
 						resolve();
 					});
 					child.on("error", (err) => {
