@@ -1226,19 +1226,23 @@ This file is generated for the active task. Update task context via:
 							scopedChildTaskIds.length > 0
 								? ` and child tasks ${scopedChildTaskIds.join(", ")}`
 								: "";
-						const initialPrompt = `${agentPrompt}\n\nYour task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.\n\nStart by reading .vem/task_context.md and .vem/current_context.md for task and project context. Then explore the repository structure (list directories, read key files like package.json, README, and relevant source files) to understand the codebase before writing any code. Implement all required changes, run any existing tests or builds to verify, then provide the vem_update block.`;
+							// In auto-exit (sandbox/cloud) mode the agent must complete the
+						// full task in one session. Use an action-first prompt so copilot
+						// doesn't stop after reading context files.
+						const autonomousPrompt = options.autoExit
+							? `${agentPrompt}\n\nYour task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.\n\nThis is a fully autonomous session — you MUST complete the FULL implementation before exiting:\n1. Read .vem/task_context.md and .vem/current_context.md for task and project context\n2. Explore the repository (list dirs, read package.json and relevant source files)\n3. Write ALL required code changes — create or edit files, do not just describe them\n4. Run existing tests/builds to verify your changes compile and pass\n5. Output the vem_update block only after all code changes are made\n\nStart implementing NOW. Do NOT stop after reading context — proceed directly to writing code.`
+							: `${agentPrompt}\n\nYour task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.\n\nStart by reading .vem/task_context.md and .vem/current_context.md for task and project context. Then explore the repository structure (list directories, read key files like package.json, README, and relevant source files) to understand the codebase before writing any code. Implement all required changes, run any existing tests or builds to verify, then provide the vem_update block.`;
 
 						if (options.autoExit) {
 							// Non-interactive (sandbox/cloud) mode: use -p + --yolo so copilot
 							// runs fully autonomously without needing a TTY for the plan menu.
-							// This matches how run-task.sh invokes copilot locally.
 							console.log(chalk.cyan("Auto-injecting context via -p flag (autonomous mode)..."));
-							launchArgs = [...launchArgs, "-p", initialPrompt, "--yolo"];
+							launchArgs = [...launchArgs, "-p", autonomousPrompt, "--yolo"];
 						} else {
 							// Interactive (local terminal) mode: use -i so the user sees the
 							// plan confirmation menu and can review before copilot executes.
 							console.log(chalk.cyan("Auto-injecting context via -i flag..."));
-							launchArgs = [...launchArgs, "-i", initialPrompt];
+							launchArgs = [...launchArgs, "-i", autonomousPrompt];
 						}
 					} else {
 						console.log(

@@ -1774,17 +1774,28 @@ This file is generated for the active task. Update task context via:
         const hasPrompt = !!firstNonOption || hasInteractiveFlag;
         if (!hasPrompt) {
           const childScopeText = scopedChildTaskIds.length > 0 ? ` and child tasks ${scopedChildTaskIds.join(", ")}` : "";
-          const initialPrompt = `${agentPrompt}
+          const autonomousPrompt = options.autoExit ? `${agentPrompt}
+
+Your task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.
+
+This is a fully autonomous session \u2014 you MUST complete the FULL implementation before exiting:
+1. Read .vem/task_context.md and .vem/current_context.md for task and project context
+2. Explore the repository (list dirs, read package.json and relevant source files)
+3. Write ALL required code changes \u2014 create or edit files, do not just describe them
+4. Run existing tests/builds to verify your changes compile and pass
+5. Output the vem_update block only after all code changes are made
+
+Start implementing NOW. Do NOT stop after reading context \u2014 proceed directly to writing code.` : `${agentPrompt}
 
 Your task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.
 
 Start by reading .vem/task_context.md and .vem/current_context.md for task and project context. Then explore the repository structure (list directories, read key files like package.json, README, and relevant source files) to understand the codebase before writing any code. Implement all required changes, run any existing tests or builds to verify, then provide the vem_update block.`;
           if (options.autoExit) {
             console.log(chalk7.cyan("Auto-injecting context via -p flag (autonomous mode)..."));
-            launchArgs = [...launchArgs, "-p", initialPrompt, "--yolo"];
+            launchArgs = [...launchArgs, "-p", autonomousPrompt, "--yolo"];
           } else {
             console.log(chalk7.cyan("Auto-injecting context via -i flag..."));
-            launchArgs = [...launchArgs, "-i", initialPrompt];
+            launchArgs = [...launchArgs, "-i", autonomousPrompt];
           }
         } else {
           console.log(
@@ -8259,11 +8270,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.42",
+  release: "0.1.43",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.42").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.43").addHelpText(
   "after",
   `
 ${chalk18.bold("\n\u26A1 Power Workflows:")}
