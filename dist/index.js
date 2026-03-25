@@ -1816,6 +1816,11 @@ Start by reading .vem/task_context.md and .vem/current_context.md for task and p
       });
       const child = spawn2(selectedCommand, launchArgs, {
         stdio: "inherit",
+        // detached: put the child in its own process group so we can
+        // kill the entire group (copilot + any LSP/daemon children it
+        // spawns) after it exits, preventing orphaned processes from
+        // holding the PTY slave open and blocking setsid --pty.
+        detached: true,
         env: {
           ...process.env,
           VEM_ACTIVE_TASK: activeTask?.id || "",
@@ -1832,6 +1837,10 @@ Start by reading .vem/task_context.md and .vem/current_context.md for task and p
             console.error(
               chalk7.red(`Agent process killed by signal: ${signal}`)
             );
+          }
+          try {
+            process.kill(-child.pid, "SIGTERM");
+          } catch {
           }
           resolve2();
         });
@@ -1854,6 +1863,7 @@ Start by reading .vem/task_context.md and .vem/current_context.md for task and p
         );
         const shellChild = spawn2(shell, ["-ic", shellCommand], {
           stdio: "inherit",
+          detached: true,
           env: {
             ...process.env,
             VEM_ACTIVE_TASK: activeTask?.id || "",
@@ -1862,10 +1872,13 @@ Start by reading .vem/task_context.md and .vem/current_context.md for task and p
           }
         });
         const shellResult = await new Promise((resolve2) => {
-          shellChild.on(
-            "exit",
-            (code) => resolve2({ exitCode: code, error: null })
-          );
+          shellChild.on("exit", (code) => {
+            try {
+              process.kill(-shellChild.pid, "SIGTERM");
+            } catch {
+            }
+            resolve2({ exitCode: code, error: null });
+          });
           shellChild.on(
             "error",
             (err) => resolve2({ exitCode: null, error: err })
@@ -8275,11 +8288,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.44",
+  release: "0.1.45",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.44").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.45").addHelpText(
   "after",
   `
 ${chalk18.bold("\n\u26A1 Power Workflows:")}

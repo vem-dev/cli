@@ -1265,6 +1265,11 @@ This file is generated for the active task. Update task context via:
 
 				const child = spawn(selectedCommand, launchArgs, {
 					stdio: "inherit",
+					// detached: put the child in its own process group so we can
+					// kill the entire group (copilot + any LSP/daemon children it
+					// spawns) after it exits, preventing orphaned processes from
+					// holding the PTY slave open and blocking setsid --pty.
+					detached: true,
 					env: {
 						...process.env,
 						VEM_ACTIVE_TASK: activeTask?.id || "",
@@ -1282,6 +1287,15 @@ This file is generated for the active task. Update task context via:
 							console.error(
 								chalk.red(`Agent process killed by signal: ${signal}`),
 							);
+						}
+						// Kill the child's entire process group to clean up any background
+						// processes (LSP servers, update checkers, etc.) that copilot
+						// may have spawned. Without this they hold the PTY slave open
+						// and setsid --pty never returns, causing the container to hang.
+						try {
+							process.kill(-(child.pid as number), "SIGTERM");
+						} catch {
+							// process group already gone — that's fine
 						}
 						resolve();
 					});
@@ -1306,6 +1320,7 @@ This file is generated for the active task. Update task context via:
 					);
 					const shellChild = spawn(shell, ["-ic", shellCommand], {
 						stdio: "inherit",
+						detached: true,
 						env: {
 							...process.env,
 							VEM_ACTIVE_TASK: activeTask?.id || "",
@@ -1317,9 +1332,14 @@ This file is generated for the active task. Update task context via:
 						exitCode: number | null;
 						error: NodeJS.ErrnoException | null;
 					}>((resolve) => {
-						shellChild.on("exit", (code) =>
-							resolve({ exitCode: code, error: null }),
-						);
+						shellChild.on("exit", (code) => {
+							try {
+								process.kill(-(shellChild.pid as number), "SIGTERM");
+							} catch {
+								// process group already gone
+							}
+							resolve({ exitCode: code, error: null });
+						});
 						shellChild.on("error", (err) =>
 							resolve({ exitCode: null, error: err }),
 						);
