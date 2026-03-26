@@ -779,12 +779,22 @@ async function syncProjectMemoryToRemote() {
     const vemDir = await getVemDir();
     const contextPath = join4(vemDir, CONTEXT_FILE);
     const currentStatePath = join4(vemDir, CURRENT_STATE_FILE);
-    const [context, currentState, decisionsLog, changelogLog] = await Promise.all([
+    const [context, currentState, decisionsLog, changelogLog, taskList] = await Promise.all([
       readFile3(contextPath, "utf-8").catch(() => ""),
       readFile3(currentStatePath, "utf-8").catch(() => ""),
       new ScalableLogService(DECISIONS_DIR).getMonolithicContent().catch(() => ""),
-      new ScalableLogService(CHANGELOG_DIR).getMonolithicContent().catch(() => "")
+      new ScalableLogService(CHANGELOG_DIR).getMonolithicContent().catch(() => ""),
+      new TaskService().getTasks().catch(() => [])
     ]);
+    const tasks = taskList.filter(
+      (t) => t.status || Array.isArray(t.evidence) && t.evidence.length > 0 || t.task_context_summary || t.task_context
+    ).map((t) => ({
+      id: t.id,
+      status: t.status,
+      evidence: t.evidence ?? [],
+      task_context: t.task_context ?? null,
+      task_context_summary: t.task_context_summary ?? null
+    }));
     const response = await fetch(`${API_URL}/projects/${projectId}/context`, {
       method: "PUT",
       headers: {
@@ -796,7 +806,8 @@ async function syncProjectMemoryToRemote() {
         context: context.trim(),
         current_state: currentState.trim(),
         decisions: decisionsLog.trim(),
-        changelog: changelogLog.trim()
+        changelog: changelogLog.trim(),
+        ...tasks.length > 0 ? { tasks } : {}
       })
     });
     return response.ok;
@@ -8288,11 +8299,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.45",
+  release: "0.1.46",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.45").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.46").addHelpText(
   "after",
   `
 ${chalk18.bold("\n\u26A1 Power Workflows:")}

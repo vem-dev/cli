@@ -10,6 +10,7 @@ import {
 	DECISIONS_DIR,
 	getVemDir,
 	ScalableLogService,
+	TaskService,
 } from "@vem/core";
 import type { VemUpdate } from "@vem/schemas";
 import chalk from "chalk";
@@ -226,7 +227,7 @@ async function syncProjectMemoryToRemote(): Promise<boolean> {
 		const vemDir = await getVemDir();
 		const contextPath = join(vemDir, CONTEXT_FILE);
 		const currentStatePath = join(vemDir, CURRENT_STATE_FILE);
-		const [context, currentState, decisionsLog, changelogLog] =
+		const [context, currentState, decisionsLog, changelogLog, taskList] =
 			await Promise.all([
 				readFile(contextPath, "utf-8").catch(() => ""),
 				readFile(currentStatePath, "utf-8").catch(() => ""),
@@ -236,7 +237,24 @@ async function syncProjectMemoryToRemote(): Promise<boolean> {
 				new ScalableLogService(CHANGELOG_DIR)
 					.getMonolithicContent()
 					.catch(() => ""),
+				new TaskService().getTasks().catch(() => []),
 			]);
+
+		const tasks = taskList
+			.filter(
+				(t) =>
+					t.status ||
+					(Array.isArray(t.evidence) && t.evidence.length > 0) ||
+					t.task_context_summary ||
+					t.task_context,
+			)
+			.map((t) => ({
+				id: t.id,
+				status: t.status,
+				evidence: t.evidence ?? [],
+				task_context: t.task_context ?? null,
+				task_context_summary: t.task_context_summary ?? null,
+			}));
 
 		const response = await fetch(`${API_URL}/projects/${projectId}/context`, {
 			method: "PUT",
@@ -250,6 +268,7 @@ async function syncProjectMemoryToRemote(): Promise<boolean> {
 				current_state: currentState.trim(),
 				decisions: decisionsLog.trim(),
 				changelog: changelogLog.trim(),
+				...(tasks.length > 0 ? { tasks } : {}),
 			}),
 		});
 		return response.ok;
