@@ -119,11 +119,14 @@ export function registerSearchCommands(program: Command) {
 
 				console.log(chalk.blue(`Asking: "${cleanedQuestion}"...`));
 
-				const payload: { question: string; path?: string } = {
+				const payload: { question: string; path?: string; taskRunId?: string } = {
 					question: cleanedQuestion,
 				};
 				if (typeof options.path === "string" && options.path.trim()) {
 					payload.path = options.path.trim();
+				}
+				if (process.env.VEM_TASK_RUN_ID) {
+					payload.taskRunId = process.env.VEM_TASK_RUN_ID;
 				}
 
 				const res = await fetch(`${API_URL}/projects/${projectId}/ask`, {

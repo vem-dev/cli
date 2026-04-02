@@ -14040,6 +14040,7 @@ var WebhookEventSchema = external_exports.enum([
   "task.blocked",
   "task.completed",
   "task.deleted",
+  "task.updated",
   "snapshot.pushed",
   "snapshot.verified",
   "snapshot.failed",
@@ -14047,9 +14048,17 @@ var WebhookEventSchema = external_exports.enum([
   "changelog.updated",
   "drift.detected",
   "project.linked",
+  "project.created",
+  "project.deleted",
   "cycle.created",
   "cycle.started",
-  "cycle.closed"
+  "cycle.closed",
+  "task_run.started",
+  "task_run.completed",
+  "task_run.failed",
+  "task_run.cancelled",
+  "member.invited",
+  "member.joined"
 ]);
 var WebhookSchema = external_exports.object({
   id: external_exports.string().uuid(),
@@ -16837,6 +16846,14 @@ async function resolveAndValidateWebhookHostname(hostname4) {
   }
 }
 async function validateWebhookUrl(url2) {
+  if (process.env.WEBHOOK_ALLOW_LOCALHOST === "true") {
+    try {
+      new URL(url2);
+    } catch {
+      throw new Error("Invalid URL");
+    }
+    return;
+  }
   let parsed;
   try {
     parsed = new URL(url2);
@@ -16876,6 +16893,8 @@ var WebhookService = class {
         return `\u2705 Task Completed: ${data.title || "Unnamed Task"}`;
       case "task.deleted":
         return `\u{1F5D1}\uFE0F Task Deleted: ${data.title || "Unnamed Task"}`;
+      case "task.updated":
+        return `\u270F\uFE0F Task Updated: ${data.title || "Unnamed Task"}`;
       case "snapshot.pushed":
         return "\u{1F4E6} New Memory Snapshot Pushed";
       case "snapshot.verified":
@@ -16890,6 +16909,28 @@ var WebhookService = class {
         return "\u26A0\uFE0F Truth Drift Detected";
       case "project.linked":
         return "\u{1F517} Project Linked to Repository";
+      case "project.created":
+        return "\u{1F389} Project Created";
+      case "project.deleted":
+        return "\u{1F5D1}\uFE0F Project Deleted";
+      case "cycle.created":
+        return `\u{1F504} Cycle Created: ${data.name || "Unnamed Cycle"}`;
+      case "cycle.started":
+        return `\u25B6\uFE0F Cycle Started: ${data.name || "Unnamed Cycle"}`;
+      case "cycle.closed":
+        return `\u{1F3C1} Cycle Closed: ${data.name || "Unnamed Cycle"}`;
+      case "task_run.started":
+        return `\u{1F916} Agent Run Started: ${data.task_id || ""}`;
+      case "task_run.completed":
+        return `\u2705 Agent Run Completed: ${data.task_id || ""}`;
+      case "task_run.failed":
+        return `\u{1F4A5} Agent Run Failed: ${data.task_id || ""}`;
+      case "task_run.cancelled":
+        return `\u23F9\uFE0F Agent Run Cancelled: ${data.task_id || ""}`;
+      case "member.invited":
+        return `\u{1F4E8} Member Invited: ${data.email || ""}`;
+      case "member.joined":
+        return `\u{1F44B} Member Joined: ${data.email || ""}`;
       default:
         return `VEM Event: ${event}`;
     }
@@ -16902,10 +16943,14 @@ var WebhookService = class {
       case "task.created":
       case "task.started":
       case "project.linked":
+      case "project.created":
+      case "member.joined":
         return 3900150;
       // Blue
       case "task.completed":
       case "snapshot.verified":
+      case "task_run.completed":
+      case "cycle.closed":
         return 1096065;
       // Emerald
       case "task.blocked":
@@ -16914,6 +16959,8 @@ var WebhookService = class {
       // Amber
       case "snapshot.failed":
       case "task.deleted":
+      case "project.deleted":
+      case "task_run.failed":
         return 15680580;
       // Red
       case "snapshot.pushed":
@@ -16921,6 +16968,18 @@ var WebhookService = class {
       case "changelog.updated":
         return 9133302;
       // Purple
+      case "task_run.started":
+      case "cycle.started":
+      case "cycle.created":
+        return 440020;
+      // Cyan
+      case "task_run.cancelled":
+      case "task.updated":
+        return 7041664;
+      // Gray
+      case "member.invited":
+        return 16347926;
+      // Orange
       default:
         return 7041664;
     }
@@ -17298,4 +17357,4 @@ export {
   WebhookService,
   WorkflowGuideService
 };
-//# sourceMappingURL=chunk-A36XSES5.js.map
+//# sourceMappingURL=chunk-22CM6ZM5.js.map

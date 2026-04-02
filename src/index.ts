@@ -6,6 +6,7 @@ import { Command } from "commander";
 import { registerAgentCommands } from "./commands/agent.js";
 import { registerAuthCommands } from "./commands/auth.js";
 import { registerCycleCommands } from "./commands/cycle.js";
+import { registerInstructionCommands } from "./commands/instructions.js";
 import { registerMaintenanceCommands } from "./commands/maintenance.js";
 import { registerProjectCommands } from "./commands/project.js";
 import { registerRunnerCommands } from "./commands/runner.js";
@@ -91,6 +92,7 @@ registerSearchCommands(program);
 registerAgentCommands(program);
 registerMaintenanceCommands(program);
 registerSessionsCommands(program);
+registerInstructionCommands(program);
 
 await trackHelpUsageFromArgv(process.argv.slice(2));
 
