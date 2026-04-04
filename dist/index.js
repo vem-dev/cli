@@ -23,7 +23,7 @@ import {
   isVemInitialized,
   listAllAgentSessions,
   parseVemUpdateBlock
-} from "./chunk-22CM6ZM5.js";
+} from "./chunk-SOAUDPRS.js";
 import {
   readCopilotSessionDetail
 } from "./chunk-PO3WNPAJ.js";
@@ -891,14 +891,21 @@ function truncateForDisplay(value, maxChars) {
   return `${trimmed.slice(0, Math.max(0, maxChars - 15)).trimEnd()}
 ...[truncated]`;
 }
-var AGENT_TASK_STATUSES = /* @__PURE__ */ new Set(["todo", "in-review", "in-progress", "blocked", "done"]);
+var AGENT_TASK_STATUSES = /* @__PURE__ */ new Set([
+  "todo",
+  "in-review",
+  "in-progress",
+  "blocked",
+  "done"
+]);
 var MAX_CHILD_TASKS_IN_PROMPT = 12;
 var TASK_STATUS_ORDER = {
   "in-review": 0,
   "in-progress": 1,
   todo: 2,
-  blocked: 3,
-  done: 4
+  ready: 3,
+  blocked: 4,
+  done: 5
 };
 var debugAgentSync = (...messages) => {
   if (process.env.VEM_DEBUG !== "1") return;
@@ -966,32 +973,20 @@ var fetchRemoteAgentTasks = async (configService) => {
     return null;
   }
 };
-var fetchRemoteAgentTaskById = async (configService, taskId) => {
+var fetchRemoteAgentTaskById = async (configService, _taskId, dbId) => {
   try {
-    const [apiKey, projectId] = await Promise.all([
-      resolveApiKey(configService),
-      configService.getProjectId()
-    ]);
-    if (!apiKey || !projectId) return null;
-    const query = new URLSearchParams({
-      id: taskId,
-      include_deleted: "true"
-    });
-    const response = await fetch(
-      `${API_URL}/projects/${projectId}/tasks?${query.toString()}`,
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          ...await buildDeviceHeaders(configService)
-        }
+    const apiKey = await resolveApiKey(configService);
+    if (!apiKey) return null;
+    const response = await fetch(`${API_URL}/tasks/${encodeURIComponent(dbId)}`, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        ...await buildDeviceHeaders(configService)
       }
-    );
+    });
     if (!response.ok) return null;
     const body = await response.json();
-    if (!Array.isArray(body.tasks)) return null;
-    const normalized = body.tasks.map((task) => normalizeAgentTask(task)).filter((task) => Boolean(task));
-    if (normalized.length === 0) return null;
-    return normalized.find((task) => task.id === taskId) ?? normalized[0];
+    if (!body.task) return null;
+    return normalizeAgentTask(body.task);
   } catch {
     return null;
   }
@@ -1011,44 +1006,12 @@ var mergeAgentTasks = (localTasks, remote) => {
 };
 var updateTaskMetaRemote = async (configService, task, patch) => {
   try {
-    const [apiKey, projectId] = await Promise.all([
-      resolveApiKey(configService),
-      configService.getProjectId()
-    ]);
-    if (!apiKey || !projectId) {
-      debugAgentSync(
-        "updateTaskMetaRemote skipped:",
-        `apiKey=${Boolean(apiKey)}`,
-        `projectId=${Boolean(projectId)}`
-      );
+    const apiKey = await resolveApiKey(configService);
+    if (!apiKey) {
+      debugAgentSync("updateTaskMetaRemote skipped: no apiKey");
       return false;
     }
-    const query = new URLSearchParams({
-      id: task.id,
-      include_deleted: "true"
-    });
-    const lookupResponse = await fetch(
-      `${API_URL}/projects/${projectId}/tasks?${query.toString()}`,
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          ...await buildDeviceHeaders(configService)
-        }
-      }
-    );
-    if (!lookupResponse.ok) {
-      debugAgentSync(
-        "task lookup failed:",
-        String(lookupResponse.status),
-        lookupResponse.statusText
-      );
-      return false;
-    }
-    const lookupBody = await lookupResponse.json();
-    const remoteTask = Array.isArray(lookupBody.tasks) ? lookupBody.tasks.find(
-      (entry) => asTrimmedString(entry.id) === task.id
-    ) ?? lookupBody.tasks[0] : null;
-    const dbId = asTrimmedString(remoteTask?.db_id) ?? asTrimmedString(task.db_id);
+    const dbId = asTrimmedString(task.db_id);
     if (!dbId) {
       debugAgentSync("task lookup missing db_id", `task=${task.id}`);
       return false;
@@ -1068,25 +1031,24 @@ var updateTaskMetaRemote = async (configService, task, patch) => {
     ) : void 0;
     const normalizedSessions = Array.isArray(patch.sessions) && patch.sessions.length > 0 ? patch.sessions : void 0;
     const payload = {
-      title: asTrimmedString(remoteTask?.title) ?? task.title,
-      description: asTrimmedString(remoteTask?.description) ?? task.description ?? null,
-      status: asTrimmedString(remoteTask?.status) ?? task.status,
-      priority: asTrimmedString(remoteTask?.priority) ?? "medium",
-      tags: normalizeStringArray(remoteTask?.tags),
-      type: asTrimmedString(remoteTask?.type) ?? null,
-      estimate_hours: normalizeNumber(remoteTask?.estimate_hours),
-      depends_on: normalizeStringArray(remoteTask?.depends_on),
-      blocked_by: normalizeStringArray(remoteTask?.blocked_by),
-      recurrence_rule: asTrimmedString(remoteTask?.recurrence_rule) ?? null,
-      owner_id: asTrimmedString(remoteTask?.owner_id) ?? null,
-      reviewer_id: asTrimmedString(remoteTask?.reviewer_id) ?? null,
-      parent_id: asTrimmedString(remoteTask?.parent_id) ?? null,
-      subtask_order: typeof remoteTask?.subtask_order === "number" ? remoteTask.subtask_order : null,
-      due_at: asTrimmedString(remoteTask?.due_at) ?? null,
-      validation_steps: normalizeStringArray(remoteTask?.validation_steps),
-      evidence: normalizeStringArray(remoteTask?.evidence),
-      related_decisions: Array.isArray(remoteTask?.related_decisions) ? remoteTask.related_decisions : [],
-      deleted_at: asTrimmedString(remoteTask?.deleted_at) ?? null
+      title: asTrimmedString(task.title) ?? task.title,
+      description: asTrimmedString(task.description) ?? null,
+      priority: asTrimmedString(task.priority) ?? "medium",
+      tags: normalizeStringArray(task.tags),
+      type: asTrimmedString(task.type) ?? null,
+      estimate_hours: normalizeNumber(task.estimate_hours),
+      depends_on: normalizeStringArray(task.depends_on),
+      blocked_by: normalizeStringArray(task.blocked_by),
+      recurrence_rule: asTrimmedString(task.recurrence_rule) ?? null,
+      owner_id: asTrimmedString(task.owner_id) ?? null,
+      reviewer_id: asTrimmedString(task.reviewer_id) ?? null,
+      parent_id: asTrimmedString(task.parent_id) ?? null,
+      subtask_order: typeof task.subtask_order === "number" ? task.subtask_order : null,
+      due_at: asTrimmedString(task.due_at) ?? null,
+      validation_steps: normalizeStringArray(task.validation_steps),
+      evidence: normalizeStringArray(task.evidence),
+      related_decisions: Array.isArray(task.related_decisions) ? task.related_decisions : [],
+      deleted_at: asTrimmedString(task.deleted_at) ?? null
     };
     if (patch.status !== void 0) payload.status = patch.status;
     if (normalizedEvidence !== void 0) payload.evidence = normalizedEvidence;
@@ -1100,6 +1062,40 @@ var updateTaskMetaRemote = async (configService, task, patch) => {
     if (patch.actor !== void 0) {
       payload.actor = patch.actor.trim().length > 0 ? patch.actor.trim() : void 0;
     }
+    if (patch.title !== void 0) payload.title = patch.title;
+    if (patch.description !== void 0)
+      payload.description = patch.description;
+    if (patch.priority !== void 0) payload.priority = patch.priority;
+    if (patch.tags !== void 0) payload.tags = patch.tags;
+    if (patch.type !== void 0) payload.type = patch.type;
+    if (patch.estimate_hours !== void 0)
+      payload.estimate_hours = patch.estimate_hours;
+    if (patch.depends_on !== void 0) payload.depends_on = patch.depends_on;
+    if (patch.blocked_by !== void 0) payload.blocked_by = patch.blocked_by;
+    if (patch.recurrence_rule !== void 0)
+      payload.recurrence_rule = patch.recurrence_rule;
+    if (patch.owner_id !== void 0) payload.owner_id = patch.owner_id;
+    if (patch.reviewer_id !== void 0)
+      payload.reviewer_id = patch.reviewer_id;
+    if (patch.validation_steps !== void 0)
+      payload.validation_steps = patch.validation_steps;
+    if (patch.user_notes !== void 0) payload.user_notes = patch.user_notes;
+    if (patch.github_issue_number !== void 0)
+      payload.github_issue_number = patch.github_issue_number;
+    if (patch.parent_id !== void 0) payload.parent_id = patch.parent_id;
+    if (patch.subtask_order !== void 0)
+      payload.subtask_order = patch.subtask_order;
+    if (patch.due_at !== void 0) payload.due_at = patch.due_at;
+    if (patch.raw_vem_update !== void 0)
+      payload.raw_vem_update = patch.raw_vem_update;
+    if (patch.cli_version !== void 0)
+      payload.cli_version = patch.cli_version;
+    if (patch.task_context !== void 0)
+      payload.task_context = patch.task_context;
+    if (patch.task_context_summary !== void 0)
+      payload.task_context_summary = patch.task_context_summary;
+    if (patch.changelog_entry !== void 0)
+      payload.changelog_entry = patch.changelog_entry;
     const response = await fetch(
       `${API_URL}/tasks/${encodeURIComponent(dbId)}/meta`,
       {
@@ -1127,30 +1123,6 @@ var updateTaskMetaRemote = async (configService, task, patch) => {
       "task meta update threw:",
       error?.message ? String(error.message) : String(error)
     );
-    return false;
-  }
-};
-var updateTaskContextRemote = async (configService, task, payload) => {
-  try {
-    const [apiKey, projectId] = await Promise.all([
-      resolveApiKey(configService),
-      configService.getProjectId()
-    ]);
-    if (!apiKey || !projectId) return false;
-    const response = await fetch(
-      `${API_URL}/projects/${projectId}/tasks/${encodeURIComponent(task.id)}/context`,
-      {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          ...await buildDeviceHeaders(configService)
-        },
-        body: JSON.stringify(payload)
-      }
-    );
-    return response.ok;
-  } catch {
     return false;
   }
 };
@@ -1183,9 +1155,41 @@ var buildRemoteTaskContextPatch = (patch, updatedTask) => {
   }
   return Object.keys(payload).length > 0 ? payload : null;
 };
-var syncParsedTaskUpdatesToRemote = async (configService, update, result) => {
-  if (!result || !update.tasks || update.tasks.length === 0) return;
-  const patchById = new Map(update.tasks.map((entry) => [entry.id, entry]));
+var syncParsedTaskUpdatesToRemote = async (configService, update, result, activeTask) => {
+  const hasTasks = Array.isArray(update.tasks) && update.tasks.length > 0;
+  if (!hasTasks) {
+    const hasContent = typeof update.context === "string" && update.context.trim().length > 0 || Array.isArray(update.changelog_append) && update.changelog_append.length > 0 || typeof update.changelog_append === "string" && update.changelog_append.trim().length > 0;
+    if (activeTask && hasContent) {
+      const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
+      await updateTaskMetaRemote(configService, activeTask, {
+        raw_vem_update: JSON.parse(JSON.stringify(update)),
+        cli_version: "0.1.56",
+        ...changelogEntry ? { changelog_entry: changelogEntry } : {}
+      });
+    }
+    return;
+  }
+  if (!result) return;
+  const changelogReasoning = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() : update.changelog_append?.trim() ?? void 0;
+  const tasksMissingDbId = result.updatedTasks.filter(
+    (t) => !asTrimmedString(t.db_id)
+  );
+  if (tasksMissingDbId.length > 0) {
+    const remoteTasks = await fetchRemoteAgentTasks(configService);
+    if (remoteTasks) {
+      const remoteById = new Map(
+        remoteTasks.visible.map((t) => [t.id, t])
+      );
+      for (const task of tasksMissingDbId) {
+        const remote = remoteById.get(task.id);
+        if (remote?.db_id) {
+          task.db_id = remote.db_id;
+          await taskService.updateTask(task.id, { db_id: remote.db_id });
+        }
+      }
+    }
+  }
+  const patchById = new Map((update.tasks ?? []).map((entry) => [entry.id, entry]));
   for (const updatedTask of result.updatedTasks) {
     const patch = patchById.get(updatedTask.id);
     if (!patch) continue;
@@ -1195,17 +1199,32 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result) => {
       evidence: patch.evidence ?? updatedTask.evidence,
       related_decisions: patch.related_decisions ?? updatedTask.related_decisions,
       sessions: Array.isArray(updatedTask.sessions) ? updatedTask.sessions : void 0,
-      reasoning: patch.reasoning,
-      actor: patch.actor
+      reasoning: patch.reasoning ?? changelogReasoning,
+      actor: patch.actor,
+      // Forward all other task fields that may have changed
+      ...patch.title !== void 0 ? { title: patch.title } : {},
+      ...patch.description !== void 0 ? { description: patch.description } : {},
+      ...patch.priority !== void 0 ? { priority: patch.priority } : {},
+      ...patch.tags !== void 0 ? { tags: patch.tags } : {},
+      ...patch.type !== void 0 ? { type: patch.type } : {},
+      ...patch.estimate_hours !== void 0 ? { estimate_hours: patch.estimate_hours } : {},
+      ...patch.depends_on !== void 0 ? { depends_on: patch.depends_on } : {},
+      ...patch.blocked_by !== void 0 ? { blocked_by: patch.blocked_by } : {},
+      ...patch.recurrence_rule !== void 0 ? { recurrence_rule: patch.recurrence_rule } : {},
+      ...patch.owner_id !== void 0 ? { owner_id: patch.owner_id } : {},
+      ...patch.reviewer_id !== void 0 ? { reviewer_id: patch.reviewer_id } : {},
+      ...patch.validation_steps !== void 0 ? { validation_steps: patch.validation_steps } : {},
+      ...patch.user_notes !== void 0 ? { user_notes: patch.user_notes } : {},
+      ...patch.github_issue_number !== void 0 ? { github_issue_number: patch.github_issue_number } : {},
+      ...patch.parent_id !== void 0 ? { parent_id: patch.parent_id } : {},
+      ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
+      ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
+      raw_vem_update: JSON.parse(JSON.stringify(update)),
+      cli_version: "0.1.56",
+      // Task memory fields — stored in task_memory_entries on the API side.
+      ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
+      changelog_entry: changelogReasoning ?? null
     });
-    const taskContextPatch = buildRemoteTaskContextPatch(patch, updatedTask);
-    if (taskContextPatch) {
-      await updateTaskContextRemote(
-        configService,
-        remoteTaskRef,
-        taskContextPatch
-      );
-    }
   }
 };
 var mergeTaskContextWithNote = (existing, note) => {
@@ -1802,7 +1821,11 @@ Your task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.
 
 Start by reading .vem/task_context.md and .vem/current_context.md for task and project context. Then explore the repository structure (list directories, read key files like package.json, README, and relevant source files) to understand the codebase before writing any code. Implement all required changes, run any existing tests or builds to verify, then provide the vem_update block.`;
           if (options.autoExit) {
-            console.log(chalk7.cyan("Auto-injecting context via -p flag (autonomous mode)..."));
+            console.log(
+              chalk7.cyan(
+                "Auto-injecting context via -p flag (autonomous mode)..."
+              )
+            );
             launchArgs = [...launchArgs, "-p", autonomousPrompt, "--yolo"];
           } else {
             console.log(chalk7.cyan("Auto-injecting context via -i flag..."));
@@ -2040,7 +2063,8 @@ Agent exited with code ${exitCode}
             await syncParsedTaskUpdatesToRemote(
               configService,
               parsedAgentUpdate,
-              appliedUpdateResult
+              appliedUpdateResult,
+              activeTask
             );
             const syncedMemory = await syncProjectMemoryToRemote();
             if (syncedMemory) {
@@ -2115,7 +2139,11 @@ Agent exited with code ${exitCode}
       }
       const freshTasks = await taskService.getTasks();
       let localActiveTask = activeTask ? freshTasks.find((t) => t.id === activeTask.id) : void 0;
-      const remoteActiveTask = activeTask ? await fetchRemoteAgentTaskById(configService, activeTask.id) : null;
+      const remoteActiveTask = activeTask?.db_id ? await fetchRemoteAgentTaskById(
+        configService,
+        activeTask.id,
+        activeTask.db_id
+      ) : null;
       if (localActiveTask && remoteActiveTask && localActiveTask.status !== remoteActiveTask.status) {
         await taskService.updateTask(localActiveTask.id, {
           status: remoteActiveTask.status
@@ -2232,18 +2260,16 @@ ${entry}`;
             });
           }
           const remoteTaskRef = freshActiveTask ?? activeTask;
-          const [remoteMetaUpdated, remoteContextUpdated] = await Promise.all(
-            [
-              updateTaskMetaRemote(configService, remoteTaskRef, {
-                status: "done",
-                evidence: [evidence.desc],
-                reasoning: reasoningText,
-                actor: agentName
-              }),
-              contextSummary !== void 0 ? updateTaskContextRemote(configService, remoteTaskRef, {
-                task_context_summary: contextSummary || null
-              }) : Promise.resolve(false)
-            ]
+          const remoteMetaUpdated = await updateTaskMetaRemote(
+            configService,
+            remoteTaskRef,
+            {
+              status: "done",
+              evidence: [evidence.desc],
+              reasoning: reasoningText,
+              actor: agentName,
+              ...contextSummary !== void 0 ? { task_context_summary: contextSummary || null } : {}
+            }
           );
           activeTask.status = "done";
           if (!remoteMetaUpdated) {
@@ -2256,7 +2282,7 @@ ${entry}`;
           console.log(
             chalk7.green(
               `
-\u2714 Task ${freshActiveTask.id} marked as done${remoteMetaUpdated || remoteContextUpdated ? " (cloud + local cache)" : " (local cache)"}.`
+\u2714 Task ${freshActiveTask.id} marked as done${remoteMetaUpdated ? " (cloud + local cache)" : " (local cache)"}.`
             )
           );
         } else {
@@ -2469,7 +2495,11 @@ function registerCycleCommands(program2) {
     try {
       const cycles = await cycleService.getCycles();
       if (cycles.length === 0) {
-        console.log(chalk9.gray("\n  No cycles yet. Create one with: vem cycle create\n"));
+        console.log(
+          chalk9.gray(
+            "\n  No cycles yet. Create one with: vem cycle create\n"
+          )
+        );
         return;
       }
       const table = new Table({
@@ -2593,7 +2623,9 @@ function registerCycleCommands(program2) {
         process.exitCode = 1;
         return;
       }
-      const updated = await cycleService.updateCycle(id, { status: "active" });
+      const updated = await cycleService.updateCycle(id, {
+        status: "active"
+      });
       console.log(chalk9.cyan(`
 \u2714 Cycle ${id} is now active
 `));
@@ -2621,7 +2653,9 @@ function registerCycleCommands(program2) {
 `));
         return;
       }
-      const updated = await cycleService.updateCycle(id, { status: "closed" });
+      const updated = await cycleService.updateCycle(id, {
+        status: "closed"
+      });
       console.log(chalk9.green(`
 \u2714 Cycle ${id} closed
 `));
@@ -2637,8 +2671,10 @@ function registerCycleCommands(program2) {
         );
       }
       console.log(
-        chalk9.gray(`  Closed: ${new Date(updated.closed_at).toLocaleDateString()}
-`)
+        chalk9.gray(
+          `  Closed: ${new Date(updated.closed_at).toLocaleDateString()}
+`
+        )
       );
     } catch (error) {
       console.error(chalk9.red(`Failed to close cycle: ${error.message}`));
@@ -2746,13 +2782,17 @@ function registerCycleCommands(program2) {
         ]);
       }
       const done = cycleTasks.filter((t) => t.status === "done").length;
-      console.log(`
+      console.log(
+        `
   ${chalk9.white(String(done))}/${chalk9.white(String(cycleTasks.length))} tasks done
-`);
+`
+      );
       console.log(table.toString());
       console.log();
     } catch (error) {
-      console.error(chalk9.red(`Failed to show cycle focus: ${error.message}`));
+      console.error(
+        chalk9.red(`Failed to show cycle focus: ${error.message}`)
+      );
     }
   });
 }
@@ -2765,7 +2805,9 @@ import prompts5 from "prompts";
 async function getRepoRoot2() {
   const { execSync: execSync4 } = await import("child_process");
   try {
-    return execSync4("git rev-parse --show-toplevel", { encoding: "utf-8" }).trim();
+    return execSync4("git rev-parse --show-toplevel", {
+      encoding: "utf-8"
+    }).trim();
   } catch {
     return process.cwd();
   }
@@ -2836,9 +2878,7 @@ function registerInstructionCommands(program2) {
         const dest = path.resolve(repoRoot, entry.path);
         const resolvedRoot = path.resolve(repoRoot);
         if (!dest.startsWith(`${resolvedRoot}${path.sep}`) && dest !== resolvedRoot) {
-          console.warn(
-            chalk10.yellow(`Skipping unsafe path: ${entry.path}`)
-          );
+          console.warn(chalk10.yellow(`Skipping unsafe path: ${entry.path}`));
           continue;
         }
         if (!options.force) {
@@ -2864,9 +2904,11 @@ function registerInstructionCommands(program2) {
       }
       const skippedMsg = skipped > 0 ? `, ${skipped} skipped` : "";
       console.log(
-        chalk10.green(`
+        chalk10.green(
+          `
 \u2714 Pulled ${written} instruction file(s)${skippedMsg}.
-`)
+`
+        )
       );
     } catch (error) {
       console.error(
@@ -2894,9 +2936,7 @@ function registerInstructionCommands(program2) {
       const localInstructions = await readLocalInstructions();
       if (localInstructions.length === 0) {
         console.log(
-          chalk10.yellow(
-            "No instruction files found locally. Looked for:"
-          )
+          chalk10.yellow("No instruction files found locally. Looked for:")
         );
         for (const f of KNOWN_AGENT_INSTRUCTION_FILES) {
           console.log(chalk10.gray(`  ${f}`));
@@ -2934,11 +2974,9 @@ function registerInstructionCommands(program2) {
         console.log(chalk10.green(`  \u2714 ${entry.path}`));
       }
       const versionNote = data.version_number ? ` (saved as v${data.version_number})` : "";
-      console.log(
-        chalk10.green(`
+      console.log(chalk10.green(`
 \u2714 Instructions pushed${versionNote}.
-`)
-      );
+`));
     } catch (error) {
       console.error(
         chalk10.red("\n\u2716 Instructions push failed:"),
@@ -2947,9 +2985,7 @@ function registerInstructionCommands(program2) {
       process.exitCode = 1;
     }
   });
-  instructionsCmd.command("status").description(
-    "Check if local instruction files are in sync with the cloud"
-  ).action(async () => {
+  instructionsCmd.command("status").description("Check if local instruction files are in sync with the cloud").action(async () => {
     await trackCommandUsage("instructions.status");
     try {
       const configService = new ConfigService();
@@ -2981,8 +3017,12 @@ function registerInstructionCommands(program2) {
       }
       const cloudData = await cloudRes.json();
       const cloudInstructions = cloudData.instructions ?? [];
-      const localMap = new Map(localInstructions.map((e) => [e.path, e.content]));
-      const cloudMap = new Map(cloudInstructions.map((e) => [e.path, e.content]));
+      const localMap = new Map(
+        localInstructions.map((e) => [e.path, e.content])
+      );
+      const cloudMap = new Map(
+        cloudInstructions.map((e) => [e.path, e.content])
+      );
       const allPaths = /* @__PURE__ */ new Set([...localMap.keys(), ...cloudMap.keys()]);
       let inSync = true;
       console.log(chalk10.bold("\nInstruction file sync status:\n"));
@@ -3005,7 +3045,9 @@ function registerInstructionCommands(program2) {
           );
           inSync = false;
         } else {
-          console.log(chalk10.green(`  \u2714 ${filePath}`) + chalk10.gray(" (in sync)"));
+          console.log(
+            chalk10.green(`  \u2714 ${filePath}`) + chalk10.gray(" (in sync)")
+          );
         }
       }
       if (allPaths.size === 0) {
@@ -3124,9 +3166,7 @@ function registerInstructionCommands(program2) {
         )
       );
       console.log(
-        chalk10.gray(
-          "  Run `vem instructions pull` to update local files."
-        )
+        chalk10.gray("  Run `vem instructions pull` to update local files.")
       );
     } catch (error) {
       console.error(
@@ -3361,7 +3401,7 @@ function registerMaintenanceCommands(program2) {
   });
   program2.command("diff").description("Show differences between local and cloud state").option("--detailed", "Show detailed content diffs").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DiffService } = await import("./dist-MFRU63ZN.js");
+      const { DiffService } = await import("./dist-27CAVU4D.js");
       const diffService = new DiffService();
       const result = await diffService.compareWithLastPush();
       if (options.json) {
@@ -3419,7 +3459,7 @@ ${"\u2500".repeat(50)}`));
   });
   program2.command("doctor").description("Run health checks on VEM setup").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DoctorService } = await import("./dist-MFRU63ZN.js");
+      const { DoctorService } = await import("./dist-27CAVU4D.js");
       const doctorService = new DoctorService();
       const results = await doctorService.runAllChecks();
       if (options.json) {
@@ -4068,7 +4108,13 @@ function commandExists(command) {
     return false;
   }
 }
-var KNOWN_RUNNER_AGENTS = ["copilot", "gh", "claude", "gemini", "codex"];
+var KNOWN_RUNNER_AGENTS = [
+  "copilot",
+  "gh",
+  "claude",
+  "gemini",
+  "codex"
+];
 function hasSandboxCredentials(agent) {
   if (agent === "claude") {
     return typeof process.env.ANTHROPIC_API_KEY === "string" && process.env.ANTHROPIC_API_KEY.trim().length > 0;
@@ -4077,7 +4123,9 @@ function hasSandboxCredentials(agent) {
     const envToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
     if (envToken && envToken.trim().length > 0) return true;
     try {
-      const token = execFileSync("gh", ["auth", "token"], { encoding: "utf-8" }).trim();
+      const token = execFileSync("gh", ["auth", "token"], {
+        encoding: "utf-8"
+      }).trim();
       return token.length > 0;
     } catch {
       return false;
@@ -4093,9 +4141,13 @@ function hasSandboxCredentials(agent) {
 }
 function getAvailableAgentCommands(selectedAgent, sandbox) {
   const isAvailable = (command) => commandExists(command) && (!sandbox || hasSandboxCredentials(command));
-  const knownAvailable = KNOWN_RUNNER_AGENTS.filter((command) => isAvailable(command));
+  const knownAvailable = KNOWN_RUNNER_AGENTS.filter(
+    (command) => isAvailable(command)
+  );
   const selectedAvailable = isAvailable(selectedAgent);
-  if (selectedAvailable && !knownAvailable.includes(selectedAgent)) {
+  if (selectedAvailable && !knownAvailable.includes(
+    selectedAgent
+  )) {
     return [selectedAgent, ...knownAvailable];
   }
   return knownAvailable;
@@ -4130,9 +4182,7 @@ function checkDockerAvailable() {
   try {
     execFileSync("docker", ["info"], { stdio: "ignore" });
   } catch {
-    console.error(
-      chalk13.red("\u2717 Docker is not running or not installed.")
-    );
+    console.error(chalk13.red("\u2717 Docker is not running or not installed."));
     console.error(
       chalk13.yellow(
         "  The vem runner requires Docker to run agents in a secure sandbox."
@@ -4165,7 +4215,9 @@ function getSandboxImageDir() {
       return dirname2(candidate);
     }
   }
-  throw new Error("Dockerfile.sandbox not found. Ensure the vem CLI is installed correctly.");
+  throw new Error(
+    "Dockerfile.sandbox not found. Ensure the vem CLI is installed correctly."
+  );
 }
 function buildSandboxImage() {
   console.log(chalk13.cyan("  Building sandbox Docker image (first use)..."));
@@ -4179,7 +4231,9 @@ function buildSandboxImage() {
 }
 function ensureSandboxImage() {
   try {
-    execFileSync("docker", ["image", "inspect", SANDBOX_IMAGE_NAME], { stdio: "ignore" });
+    execFileSync("docker", ["image", "inspect", SANDBOX_IMAGE_NAME], {
+      stdio: "ignore"
+    });
   } catch {
     buildSandboxImage();
   }
@@ -4194,7 +4248,11 @@ function collectSandboxCredentials(agent) {
   if (agent === "claude") {
     addFromEnv("ANTHROPIC_API_KEY");
     if (!creds.ANTHROPIC_API_KEY) {
-      console.error(chalk13.red(`\u2717 ANTHROPIC_API_KEY is not set. Required for --agent claude.`));
+      console.error(
+        chalk13.red(
+          `\u2717 ANTHROPIC_API_KEY is not set. Required for --agent claude.`
+        )
+      );
       process.exit(1);
     }
   } else if (agent === "copilot" || agent === "gh") {
@@ -4203,31 +4261,43 @@ function collectSandboxCredentials(agent) {
       creds.GITHUB_TOKEN = envToken;
     } else {
       try {
-        const token = execFileSync("gh", ["auth", "token"], { encoding: "utf-8" }).trim();
+        const token = execFileSync("gh", ["auth", "token"], {
+          encoding: "utf-8"
+        }).trim();
         if (token) creds.GITHUB_TOKEN = token;
       } catch {
       }
     }
     if (!creds.GITHUB_TOKEN) {
-      console.error(chalk13.red(`\u2717 GitHub token not found. Required for --agent copilot.`));
-      console.error(chalk13.gray("  Set GITHUB_TOKEN env var or run: gh auth login"));
+      console.error(
+        chalk13.red(`\u2717 GitHub token not found. Required for --agent copilot.`)
+      );
+      console.error(
+        chalk13.gray("  Set GITHUB_TOKEN env var or run: gh auth login")
+      );
       process.exit(1);
     }
   } else if (agent === "gemini") {
     addFromEnv("GEMINI_API_KEY");
     if (!creds.GEMINI_API_KEY) {
-      console.error(chalk13.red(`\u2717 GEMINI_API_KEY is not set. Required for --agent gemini.`));
+      console.error(
+        chalk13.red(`\u2717 GEMINI_API_KEY is not set. Required for --agent gemini.`)
+      );
       process.exit(1);
     }
   } else if (agent === "codex") {
     addFromEnv("OPENAI_API_KEY");
     if (!creds.OPENAI_API_KEY) {
-      console.error(chalk13.red(`\u2717 OPENAI_API_KEY is not set. Required for --agent codex.`));
+      console.error(
+        chalk13.red(`\u2717 OPENAI_API_KEY is not set. Required for --agent codex.`)
+      );
       process.exit(1);
     }
   }
-  if (process.env.GIT_AUTHOR_NAME) creds.GIT_AUTHOR_NAME = process.env.GIT_AUTHOR_NAME;
-  if (process.env.GIT_AUTHOR_EMAIL) creds.GIT_AUTHOR_EMAIL = process.env.GIT_AUTHOR_EMAIL;
+  if (process.env.GIT_AUTHOR_NAME)
+    creds.GIT_AUTHOR_NAME = process.env.GIT_AUTHOR_NAME;
+  if (process.env.GIT_AUTHOR_EMAIL)
+    creds.GIT_AUTHOR_EMAIL = process.env.GIT_AUTHOR_EMAIL;
   return creds;
 }
 function sanitizeBranchSegment(value) {
@@ -4241,7 +4311,10 @@ async function resolveGitRemote(configService) {
   const linkedRemote = (await configService.getLinkedRemoteName())?.trim();
   const preferredRemote = linkedRemote || "origin";
   try {
-    return { name: preferredRemote, url: runGit(["remote", "get-url", preferredRemote]) };
+    return {
+      name: preferredRemote,
+      url: runGit(["remote", "get-url", preferredRemote])
+    };
   } catch {
     if (preferredRemote !== "origin") {
       try {
@@ -4275,14 +4348,26 @@ function getCommitHashesSince(baseHash) {
   const output = runGit(["rev-list", `${baseHash}..HEAD`]);
   return output.split("\n").map((entry) => entry.trim()).filter(Boolean);
 }
+var _deviceHeadersCache = null;
+function getCachedDeviceHeaders(configService) {
+  if (!_deviceHeadersCache) {
+    _deviceHeadersCache = buildDeviceHeaders(configService);
+  }
+  return _deviceHeadersCache;
+}
+var FETCH_TIMEOUT_MS = 3e4;
 async function apiRequest(configService, apiKey, path4, init) {
   const headers = {
     Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
-    ...await buildDeviceHeaders(configService),
+    ...await getCachedDeviceHeaders(configService),
     ...init?.headers ?? {}
   };
-  return fetch(`${API_URL}${path4}`, { ...init, headers });
+  return fetch(`${API_URL}${path4}`, {
+    ...init,
+    headers,
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+  });
 }
 async function appendRunLogs(configService, apiKey, runId, entries) {
   if (entries.length === 0) return;
@@ -4292,23 +4377,33 @@ async function appendRunLogs(configService, apiKey, runId, entries) {
   });
 }
 async function sendRunnerHeartbeat(configService, apiKey, projectId, status, currentTaskRunId, capabilities) {
-  await apiRequest(configService, apiKey, `/projects/${projectId}/runners/heartbeat`, {
-    method: "POST",
-    body: JSON.stringify({
-      status,
-      current_task_run_id: currentTaskRunId,
-      capabilities
-    })
-  });
+  await apiRequest(
+    configService,
+    apiKey,
+    `/projects/${projectId}/runners/heartbeat`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        status,
+        current_task_run_id: currentTaskRunId,
+        capabilities
+      })
+    }
+  );
 }
 async function completeTaskRunWithRetry(configService, apiKey, runId, payload, attempts = 5) {
   let lastError = "unknown error";
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const response = await apiRequest(configService, apiKey, `/task-runs/${runId}/complete`, {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
+      const response = await apiRequest(
+        configService,
+        apiKey,
+        `/task-runs/${runId}/complete`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload)
+        }
+      );
       if (response.ok) return;
       const bodyText = await response.text().catch(() => "");
       lastError = `HTTP ${response.status}${bodyText ? `: ${bodyText}` : ""}`;
@@ -4322,7 +4417,15 @@ async function completeTaskRunWithRetry(configService, apiKey, runId, payload, a
   throw new Error(`Failed to complete run ${runId}: ${lastError}`);
 }
 async function executeClaimedRun(input) {
-  const { configService, apiKey, projectId, agent, useSandbox, agentPinned, run } = input;
+  const {
+    configService,
+    apiKey,
+    projectId,
+    agent,
+    useSandbox,
+    agentPinned,
+    run
+  } = input;
   const repoRoot = getRepoRoot3();
   let sequence = 1;
   let heartbeatTimer = null;
@@ -4349,7 +4452,11 @@ async function executeClaimedRun(input) {
     } catch {
       originalBranch = null;
     }
-    const preparedBranch = prepareTaskBranch(run.task_external_id, baseBranch, remote.name);
+    const preparedBranch = prepareTaskBranch(
+      run.task_external_id,
+      baseBranch,
+      remote.name
+    );
     baseHash = preparedBranch.baseHash;
     branchName = preparedBranch.branchName;
     await appendRunLogs(configService, apiKey, run.id, [
@@ -4362,7 +4469,14 @@ async function executeClaimedRun(input) {
     ]);
     const child = spawn3(
       process.execPath,
-      [getCliEntrypoint(), "agent", agent, "--task", run.task_external_id, "--auto-exit"],
+      [
+        getCliEntrypoint(),
+        "agent",
+        agent,
+        "--task",
+        run.task_external_id,
+        "--auto-exit"
+      ],
       {
         env: {
           ...process.env,
@@ -4432,15 +4546,13 @@ async function executeClaimedRun(input) {
         { sequence: sequence++, stream: "stderr", chunk: text }
       ]);
     });
-    const result = await new Promise(
-      (resolve3) => {
-        child.on("exit", (code, signal) => resolve3({ code, signal }));
-        child.on("error", (error) => {
-          completionError = error.message;
-          resolve3({ code: null, signal: null });
-        });
-      }
-    );
+    const result = await new Promise((resolve3) => {
+      child.on("exit", (code, signal) => resolve3({ code, signal }));
+      child.on("error", (error) => {
+        completionError = error.message;
+        resolve3({ code: null, signal: null });
+      });
+    });
     exitCode = result.code;
     if (completionError) {
       completionStatus = cancellationRequested ? "cancelled" : "failed";
@@ -4462,7 +4574,11 @@ async function executeClaimedRun(input) {
       if (completionStatus === "completed" && hasDirtyWorktree()) {
         runGit(["add", "-A"], { stdio: "inherit" });
         runGit(
-          ["commit", "-m", `chore(${run.task_external_id}): apply agent changes`],
+          [
+            "commit",
+            "-m",
+            `chore(${run.task_external_id}): apply agent changes`
+          ],
           { stdio: "inherit" }
         );
       }
@@ -4538,6 +4654,7 @@ async function executeClaimedRunInSandbox(input) {
   let containerName = null;
   let cancellationRequested = false;
   let timedOut = false;
+  let fullDockerLogLines = [];
   const baseBranch = run.agent_base_branch || "main";
   const remote = await resolveGitRemote(configService);
   worktreePath = `/tmp/vem-run-${run.id}-${Date.now().toString(36)}`;
@@ -4558,15 +4675,19 @@ async function executeClaimedRunInSandbox(input) {
       execFileSync("rm", ["-rf", worktreePath], { stdio: "ignore" });
     }
     console.log(chalk13.gray(`  Cloning ${baseBranch} \u2192 ${worktreePath}`));
-    execFileSync("git", [
-      "clone",
-      "--quiet",
-      `file://${repoRoot}`,
-      "--branch",
-      baseBranch,
-      "--single-branch",
-      worktreePath
-    ], { stdio: "pipe" });
+    execFileSync(
+      "git",
+      [
+        "clone",
+        "--quiet",
+        `file://${repoRoot}`,
+        "--branch",
+        baseBranch,
+        "--single-branch",
+        worktreePath
+      ],
+      { stdio: "pipe" }
+    );
     runGitIn(worktreePath, ["checkout", "-b", branchName]);
     if (remoteUrl) {
       runGitIn(worktreePath, ["remote", "set-url", "origin", remoteUrl]);
@@ -4633,7 +4754,9 @@ async function executeClaimedRunInSandbox(input) {
           if (dockerProcess?.pid) {
             try {
               if (containerName) {
-                execFileSync("docker", ["stop", containerName], { stdio: "ignore" });
+                execFileSync("docker", ["stop", containerName], {
+                  stdio: "ignore"
+                });
               } else {
                 dockerProcess.kill("SIGTERM");
               }
@@ -4641,7 +4764,11 @@ async function executeClaimedRunInSandbox(input) {
             }
           }
           await appendRunLogs(configService, apiKey, run.id, [
-            { sequence: sequence++, stream: "system", chunk: "Cancellation requested from web UI. Stopping sandbox container.\n" }
+            {
+              sequence: sequence++,
+              stream: "system",
+              chunk: "Cancellation requested from web UI. Stopping sandbox container.\n"
+            }
           ]);
         }
         if (maxRuntimeAt && !timedOut) {
@@ -4653,21 +4780,29 @@ async function executeClaimedRunInSandbox(input) {
             if (dockerProcess?.pid) {
               try {
                 if (containerName) {
-                  execFileSync("docker", ["stop", containerName], { stdio: "ignore" });
+                  execFileSync("docker", ["stop", containerName], {
+                    stdio: "ignore"
+                  });
                 }
               } catch {
               }
             }
             await appendRunLogs(configService, apiKey, run.id, [
-              { sequence: sequence++, stream: "system", chunk: "Run exceeded the maximum runtime. Stopping sandbox container.\n" }
+              {
+                sequence: sequence++,
+                stream: "system",
+                chunk: "Run exceeded the maximum runtime. Stopping sandbox container.\n"
+              }
             ]);
           }
         }
       } catch {
       }
     }, 3e4);
+    const stdoutChunks = [];
     const streamLogs = (stream, data) => {
       const chunk = data.toString("utf-8");
+      if (stream === "stdout") stdoutChunks.push(chunk);
       appendRunLogs(configService, apiKey, run.id, [
         { sequence: sequence++, stream, chunk }
       ]).catch(() => {
@@ -4687,7 +4822,10 @@ async function executeClaimedRunInSandbox(input) {
     if (exitCode === 0 && !cancellationRequested && !timedOut) {
       completionStatus = "completed";
       try {
-        const output = runGitIn(worktreePath, ["rev-list", `${baseHash}..HEAD`]);
+        const output = runGitIn(worktreePath, [
+          "rev-list",
+          `${baseHash}..HEAD`
+        ]);
         commitHashes = output.split("\n").map((h) => h.trim()).filter(Boolean);
       } catch {
       }
@@ -4695,18 +4833,29 @@ async function executeClaimedRunInSandbox(input) {
     } else if (!cancellationRequested && !timedOut) {
       completionStatus = "failed";
     }
+    fullDockerLogLines = stdoutChunks.join("").split("\n").filter(Boolean).slice(-1e3);
     if (completionStatus === "completed" && commitHashes.length > 0) {
       try {
-        runGitIn(worktreePath, ["push", "-u", "origin", branchName], { stdio: "inherit" });
+        runGitIn(worktreePath, ["push", "-u", "origin", branchName], {
+          stdio: "inherit"
+        });
         await appendRunLogs(configService, apiKey, run.id, [
-          { sequence: sequence++, stream: "system", chunk: `Pushed branch ${branchName} to ${remote.name}.
-` }
+          {
+            sequence: sequence++,
+            stream: "system",
+            chunk: `Pushed branch ${branchName} to ${remote.name}.
+`
+          }
         ]);
       } catch (pushErr) {
         const msg = pushErr instanceof Error ? pushErr.message : String(pushErr);
         await appendRunLogs(configService, apiKey, run.id, [
-          { sequence: sequence++, stream: "system", chunk: `Warning: failed to push branch: ${msg}
-` }
+          {
+            sequence: sequence++,
+            stream: "system",
+            chunk: `Warning: failed to push branch: ${msg}
+`
+          }
         ]);
         createPr = false;
       }
@@ -4720,8 +4869,12 @@ async function executeClaimedRunInSandbox(input) {
       heartbeatTimer = null;
     }
     await appendRunLogs(configService, apiKey, run.id, [
-      { sequence: sequence++, stream: "system", chunk: `Sandbox run error: ${msg}
-` }
+      {
+        sequence: sequence++,
+        stream: "system",
+        chunk: `Sandbox run error: ${msg}
+`
+      }
     ]).catch(() => {
     });
   } finally {
@@ -4756,19 +4909,35 @@ async function executeClaimedRunInSandbox(input) {
       pr_body: run.user_prompt?.trim() ? `Triggered from VEM web.
 
 Instructions:
-${run.user_prompt.trim()}` : "Triggered from VEM web."
+${run.user_prompt.trim()}` : "Triggered from VEM web.",
+      // Pass the full Docker log so the API can parse the vem_update block
+      // reliably even when some live-streamed chunks were dropped.
+      full_log_lines: fullDockerLogLines.length > 0 ? fullDockerLogLines : void 0
     });
   }
 }
 async function appendTerminalLogs(configService, apiKey, sessionId, entries) {
   if (entries.length === 0) return;
-  await apiRequest(configService, apiKey, `/terminal-sessions/${sessionId}/logs`, {
-    method: "POST",
-    body: JSON.stringify({ entries })
-  });
+  await apiRequest(
+    configService,
+    apiKey,
+    `/terminal-sessions/${sessionId}/logs`,
+    {
+      method: "POST",
+      body: JSON.stringify({ entries })
+    }
+  );
 }
 async function executeClaimedTerminalSession(input) {
-  const { configService, apiKey, projectId, agent, useSandbox, agentPinned, session } = input;
+  const {
+    configService,
+    apiKey,
+    projectId,
+    agent,
+    useSandbox,
+    agentPinned,
+    session
+  } = input;
   const repoRoot = getRepoRoot3();
   let sequence = 2;
   let heartbeatTimer = null;
@@ -4828,15 +4997,13 @@ $ ${session.command}
         { sequence: sequence++, stream: "stderr", chunk: text }
       ]);
     });
-    const result = await new Promise(
-      (resolve3) => {
-        child.on("exit", (code, signal) => resolve3({ code, signal }));
-        child.on("error", (error) => {
-          completionError = error.message;
-          resolve3({ code: null, signal: null });
-        });
-      }
-    );
+    const result = await new Promise((resolve3) => {
+      child.on("exit", (code, signal) => resolve3({ code, signal }));
+      child.on("error", (error) => {
+        completionError = error.message;
+        resolve3({ code: null, signal: null });
+      });
+    });
     exitCode = result.code;
     if (completionError) {
       completionStatus = cancellationRequested ? "cancelled" : "failed";
@@ -4866,15 +5033,20 @@ $ ${session.command}
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
     }
-    await apiRequest(configService, apiKey, `/terminal-sessions/${session.id}/complete`, {
-      method: "POST",
-      body: JSON.stringify({
-        status: completionStatus,
-        exit_code: exitCode,
-        error_message: completionError,
-        terminal_reason: completionStatus === "cancelled" ? "Command cancelled from workspace UI." : null
-      })
-    });
+    await apiRequest(
+      configService,
+      apiKey,
+      `/terminal-sessions/${session.id}/complete`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          status: completionStatus,
+          exit_code: exitCode,
+          error_message: completionError,
+          terminal_reason: completionStatus === "cancelled" ? "Command cancelled from workspace UI." : null
+        })
+      }
+    );
     await sendRunnerHeartbeat(
       configService,
       apiKey,
@@ -4886,7 +5058,14 @@ $ ${session.command}
   }
 }
 function registerRunnerCommands(program2) {
-  program2.command("runner").description("Run a paired worker that executes queued web task runs").option("--agent <command>", "Agent command to launch for claimed tasks", "copilot").option("--poll-interval <seconds>", "Polling interval in seconds", "10").option("--once", "Claim at most one run and then exit").option("--unsafe", "Disable Docker sandbox (run agent directly on host \u2014 no isolation)").action(async (options, command) => {
+  program2.command("runner").description("Run a paired worker that executes queued web task runs").option(
+    "--agent <command>",
+    "Agent command to launch for claimed tasks",
+    "copilot"
+  ).option("--poll-interval <seconds>", "Polling interval in seconds", "10").option("--once", "Claim at most one run and then exit").option(
+    "--unsafe",
+    "Disable Docker sandbox (run agent directly on host \u2014 no isolation)"
+  ).action(async (options, command) => {
     const configService = new ConfigService();
     const apiKey = await ensureAuthenticated(configService);
     const projectId = await configService.getProjectId();
@@ -4912,7 +5091,11 @@ function registerRunnerCommands(program2) {
       )
     );
     if (!useSandbox) {
-      console.log(chalk13.yellow("  \u26A0  Running in unsafe mode \u2014 agent has full host access."));
+      console.log(
+        chalk13.yellow(
+          "  \u26A0  Running in unsafe mode \u2014 agent has full host access."
+        )
+      );
     }
     let shouldStop = false;
     let consecutiveErrors = 0;
@@ -4925,7 +5108,11 @@ function registerRunnerCommands(program2) {
     const claimBackend = useSandbox ? "local_sandbox" : "local_runner";
     while (!shouldStop) {
       try {
-        const capabilities = getRunnerCapabilities(agent, useSandbox, agentPinned);
+        const capabilities = getRunnerCapabilities(
+          agent,
+          useSandbox,
+          agentPinned
+        );
         await sendRunnerHeartbeat(
           configService,
           apiKey,
@@ -4949,7 +5136,9 @@ function registerRunnerCommands(program2) {
         );
         if (!claimResponse.ok) {
           const data = await claimResponse.json().catch(() => ({}));
-          throw new Error(data.error || "Failed to claim task run");
+          throw new Error(
+            data.error || "Failed to claim task run"
+          );
         }
         const payload = await claimResponse.json();
         if (payload.run) {
@@ -4987,7 +5176,9 @@ function registerRunnerCommands(program2) {
         );
         if (!terminalClaimResponse.ok) {
           const data = await terminalClaimResponse.json().catch(() => ({}));
-          throw new Error(data.error || "Failed to claim terminal session");
+          throw new Error(
+            data.error || "Failed to claim terminal session"
+          );
         }
         const terminalPayload = await terminalClaimResponse.json();
         if (terminalPayload.session) {
@@ -6382,6 +6573,34 @@ Snapshot Contents:`));
         return;
       }
       const update = parseVemUpdateBlock(input);
+      const sandboxRunId = process.env.VEM_TASK_RUN_ID;
+      const sandboxApiKey = process.env.VEM_API_KEY;
+      const sandboxApiUrl = "https://api.vem.dev";
+      if (sandboxRunId && sandboxApiKey) {
+        const res = await fetch(
+          `${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-update-structured`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${sandboxApiKey}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ update })
+          }
+        );
+        if (!res.ok) {
+          const errText = await res.text().catch(() => "");
+          console.error(
+            chalk17.red("[vem finalize] API submission failed:"),
+            res.status,
+            errText
+          );
+          process.exitCode = 1;
+        } else {
+          console.log(chalk17.green("\n\u2714 vem update submitted to API\n"));
+        }
+        return;
+      }
       const result = await applyVemUpdate(update);
       console.log(chalk17.green("\n\u2714 vem update applied\n"));
       if (result.updatedTasks.length > 0) {
@@ -6403,6 +6622,13 @@ Snapshot Contents:`));
           chalk17.gray(`Changelog entries: ${result.changelogLines.length}`)
         );
       }
+      if (result.newCycles.length > 0) {
+        console.log(
+          chalk17.gray(
+            `New cycles: ${result.newCycles.map((c) => c.name).join(", ")}`
+          )
+        );
+      }
       if (result.decisionsAppended) {
         console.log(chalk17.gray("Decisions updated."));
       }
@@ -6417,6 +6643,21 @@ Snapshot Contents:`));
       }
       if (result.contextUpdated) {
         console.log(chalk17.gray("Context updated."));
+      }
+      const configService = new ConfigService();
+      await syncParsedTaskUpdatesToRemote(
+        configService,
+        update,
+        result
+      ).catch((err) => {
+        console.error(
+          chalk17.yellow("[vem finalize] syncParsed failed:"),
+          err instanceof Error ? err.message : String(err)
+        );
+      });
+      const synced = await syncProjectMemoryToRemote().catch(() => false);
+      if (synced) {
+        console.log(chalk17.gray("\u2714 Synced to cloud."));
       }
     } catch (error) {
       if (error instanceof Error) {
@@ -7023,7 +7264,14 @@ function registerTaskCommands(program2) {
     const tasks = await getDisplayTasks({ includeDeleted: true });
     const status = typeof options.status === "string" ? options.status : void 0;
     const cycleFilter = typeof options.cycle === "string" ? options.cycle.trim() : void 0;
-    const validStatuses = /* @__PURE__ */ new Set(["todo", "ready", "in-review", "in-progress", "blocked", "done"]);
+    const validStatuses = /* @__PURE__ */ new Set([
+      "todo",
+      "ready",
+      "in-review",
+      "in-progress",
+      "blocked",
+      "done"
+    ]);
     if (status && !validStatuses.has(status)) {
       console.error(
         chalk18.red(
@@ -7389,7 +7637,10 @@ ${currentSummary}
   ).option("-d, --description <description>", "Task description").option("--tags <tags>", "Comma-separated tags").option("--type <type>", "Task type (feature, bug, chore, spike, enabler)").option("--estimate-hours <hours>", "Estimated hours (e.g. 2.5)").option("--depends-on <ids>", "Comma-separated task IDs").option("--blocked-by <ids>", "Comma-separated task IDs").option("--recurrence <rule>", "Recurrence rule (weekly, monthly, cron)").option("--owner <id>", "Owner ID").option("--reviewer <id>", "Reviewer ID").option("--parent <id>", "Parent task ID").option("--order <number>", "Subtask order").option("--due-at <iso>", "Due date ISO string (YYYY-MM-DD)").option(
     "--validation <steps>",
     'Comma-separated validation steps (e.g. "pnpm build, pnpm test")'
-  ).option("--cycle <id>", "Assign to a cycle (e.g. CYCLE-001)").option("--impact-score <score>", "Impact score 0-100 (RICE-based priority)").option("--actor <name>", "Actor name for task creation").option("-r, --reasoning <reasoning>", "Reasoning for creation").action(async (title, options) => {
+  ).option("--cycle <id>", "Assign to a cycle (e.g. CYCLE-001)").option(
+    "--impact-score <score>",
+    "Impact score 0-100 (RICE-based priority)"
+  ).option("--actor <name>", "Actor name for task creation").option("-r, --reasoning <reasoning>", "Reasoning for creation").action(async (title, options) => {
     await trackCommandUsage("task add");
     try {
       let taskTitle = typeof title === "string" && title.trim().length > 0 ? title.trim() : void 0;
@@ -7736,7 +7987,9 @@ ${currentSummary}
       const dueAt = parseDueAtIso(dueAtInput);
       const normalizedType = typeInput?.trim().toLowerCase();
       if (normalizedType && normalizedType !== "feature" && normalizedType !== "bug" && normalizedType !== "chore" && normalizedType !== "spike" && normalizedType !== "enabler") {
-        throw new Error("type must be feature, bug, chore, spike, or enabler.");
+        throw new Error(
+          "type must be feature, bug, chore, spike, or enabler."
+        );
       }
       const taskType = normalizedType === "feature" || normalizedType === "bug" || normalizedType === "chore" || normalizedType === "spike" || normalizedType === "enabler" ? normalizedType : void 0;
       let validationSteps = parseCommaList(validationInput);
@@ -7863,7 +8116,10 @@ ${currentSummary}
   taskCmd.command("update <id>").description("Update task metadata").option("--tags <tags>", "Comma-separated tags").option("--type <type>", "Task type (feature, bug, chore, spike, enabler)").option("--estimate-hours <hours>", "Estimated hours (e.g. 2.5)").option("--depends-on <ids>", "Comma-separated task IDs").option("--blocked-by <ids>", "Comma-separated task IDs").option("--recurrence <rule>", "Recurrence rule (weekly, monthly, cron)").option("--owner <id>", "Owner ID").option("--reviewer <id>", "Reviewer ID").option("--parent <id>", "Parent task ID").option("--order <number>", "Subtask order").option("--due-at <iso>", "Due date ISO string (YYYY-MM-DD)").option(
     "--validation <steps>",
     "Set validation steps (comma-separated). Use empty string to clear."
-  ).option("--cycle <id>", "Assign to a cycle (e.g. CYCLE-001)").option("--impact-score <score>", "Impact score 0-100 (RICE-based priority)").option("--actor <name>", "Actor name for task update").option("-r, --reasoning <reasoning>", "Reasoning for update").action(async (id, options) => {
+  ).option("--cycle <id>", "Assign to a cycle (e.g. CYCLE-001)").option(
+    "--impact-score <score>",
+    "Impact score 0-100 (RICE-based priority)"
+  ).option("--actor <name>", "Actor name for task update").option("-r, --reasoning <reasoning>", "Reasoning for update").action(async (id, options) => {
     try {
       const estimate = options.estimateHours !== void 0 ? Number.parseFloat(options.estimateHours) : void 0;
       if (estimate !== void 0 && Number.isNaN(estimate)) {
@@ -8504,8 +8760,12 @@ No agent sessions attached to ${id} yet.`)
         console.log(chalk18.bold(`
 \u23F1  Flow Metrics: ${id} \u2014 ${task.title}
 `));
-        console.log(`  ${chalk18.gray("Lead time (created \u2192 done):")}  ${fmtMs(metrics.lead_time_ms)}`);
-        console.log(`  ${chalk18.gray("Cycle time (started \u2192 done):")} ${fmtMs(metrics.cycle_time_ms)}`);
+        console.log(
+          `  ${chalk18.gray("Lead time (created \u2192 done):")}  ${fmtMs(metrics.lead_time_ms)}`
+        );
+        console.log(
+          `  ${chalk18.gray("Cycle time (started \u2192 done):")} ${fmtMs(metrics.cycle_time_ms)}`
+        );
         if (Object.keys(metrics.time_in_status).length > 0) {
           console.log(chalk18.gray("\n  Time in each status:"));
           for (const [status, ms] of Object.entries(metrics.time_in_status)) {
@@ -8523,15 +8783,27 @@ No agent sessions attached to ${id} yet.`)
           return chalk18.white(`${hrs}h`);
         };
         console.log(chalk18.bold("\n\u{1F4CA}  Project Flow Summary\n"));
-        console.log(`  ${chalk18.gray("WIP (active tasks):")}         ${chalk18.yellow(String(summary.wip_count))}`);
-        console.log(`  ${chalk18.gray("Throughput (last 7d):")}        ${chalk18.white(String(summary.throughput_last_7d))} tasks`);
-        console.log(`  ${chalk18.gray("Throughput (last 30d):")}       ${chalk18.white(String(summary.throughput_last_30d))} tasks`);
-        console.log(`  ${chalk18.gray("Avg cycle time:")}              ${fmtMs(summary.avg_cycle_time_ms)}`);
-        console.log(`  ${chalk18.gray("Avg lead time:")}               ${fmtMs(summary.avg_lead_time_ms)}`);
+        console.log(
+          `  ${chalk18.gray("WIP (active tasks):")}         ${chalk18.yellow(String(summary.wip_count))}`
+        );
+        console.log(
+          `  ${chalk18.gray("Throughput (last 7d):")}        ${chalk18.white(String(summary.throughput_last_7d))} tasks`
+        );
+        console.log(
+          `  ${chalk18.gray("Throughput (last 30d):")}       ${chalk18.white(String(summary.throughput_last_30d))} tasks`
+        );
+        console.log(
+          `  ${chalk18.gray("Avg cycle time:")}              ${fmtMs(summary.avg_cycle_time_ms)}`
+        );
+        console.log(
+          `  ${chalk18.gray("Avg lead time:")}               ${fmtMs(summary.avg_lead_time_ms)}`
+        );
         console.log();
       }
     } catch (error) {
-      console.error(chalk18.red(`Failed to get flow metrics: ${error.message}`));
+      console.error(
+        chalk18.red(`Failed to get flow metrics: ${error.message}`)
+      );
     }
   });
   taskCmd.command("score [id]").description("Show or set the impact score (0-100) for a task").option("--set <score>", "Set impact score manually (0-100)").option("-r, --reasoning <reasoning>", "Reasoning for score change").action(async (id, options) => {
@@ -8543,7 +8815,9 @@ No agent sessions attached to ${id} yet.`)
           (t) => t.impact_score === void 0 && t.status !== "done" && !t.deleted_at
         );
         if (unscored.length === 0) {
-          console.log(chalk18.green("\n\u2714 All active tasks have impact scores.\n"));
+          console.log(
+            chalk18.green("\n\u2714 All active tasks have impact scores.\n")
+          );
           return;
         }
         const table = new Table4({
@@ -8561,9 +8835,13 @@ No agent sessions attached to ${id} yet.`)
         }
         console.log(chalk18.bold("\n\u{1F3AF}  Impact Scores\n"));
         console.log(table.toString());
-        console.log(chalk18.gray(`
+        console.log(
+          chalk18.gray(
+            `
   Unscored: ${unscored.length} task(s). Use: vem task score <id> --set <0-100>
-`));
+`
+          )
+        );
         return;
       }
       const task = await taskService.getTask(id);
@@ -8574,7 +8852,9 @@ No agent sessions attached to ${id} yet.`)
       if (options.set !== void 0) {
         const score = Number.parseFloat(options.set);
         if (Number.isNaN(score) || score < 0 || score > 100) {
-          console.error(chalk18.red("Score must be a number between 0 and 100."));
+          console.error(
+            chalk18.red("Score must be a number between 0 and 100.")
+          );
           process.exitCode = 1;
           return;
         }
@@ -8582,15 +8862,21 @@ No agent sessions attached to ${id} yet.`)
           impact_score: score,
           reasoning: options.reasoning
         });
-        console.log(chalk18.green(`
+        console.log(
+          chalk18.green(`
 \u2714 Impact score for ${id} set to ${score}
-`));
+`)
+        );
       } else {
         console.log(chalk18.bold(`
 \u{1F3AF}  ${id}: ${task.title}`));
-        console.log(`  Impact score: ${task.impact_score !== void 0 ? chalk18.yellow(String(Math.round(task.impact_score))) : chalk18.gray("not set")}`);
-        console.log(chalk18.gray(`  Set with: vem task score ${id} --set <0-100>
-`));
+        console.log(
+          `  Impact score: ${task.impact_score !== void 0 ? chalk18.yellow(String(Math.round(task.impact_score))) : chalk18.gray("not set")}`
+        );
+        console.log(
+          chalk18.gray(`  Set with: vem task score ${id} --set <0-100>
+`)
+        );
       }
     } catch (error) {
       console.error(chalk18.red(`Failed to manage score: ${error.message}`));
@@ -8683,11 +8969,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.47",
+  release: "0.1.56",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.47").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.56").addHelpText(
   "after",
   `
 ${chalk19.bold("\n\u26A1 Power Workflows:")}

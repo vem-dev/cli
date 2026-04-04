@@ -18,7 +18,9 @@ type InstructionEntry = { path: string; content: string };
 async function getRepoRoot(): Promise<string> {
 	const { execSync } = await import("node:child_process");
 	try {
-		return execSync("git rev-parse --show-toplevel", { encoding: "utf-8" }).trim();
+		return execSync("git rev-parse --show-toplevel", {
+			encoding: "utf-8",
+		}).trim();
 	} catch {
 		return process.cwd();
 	}
@@ -117,9 +119,7 @@ export function registerInstructionCommands(program: Command) {
 						!dest.startsWith(`${resolvedRoot}${path.sep}`) &&
 						dest !== resolvedRoot
 					) {
-						console.warn(
-							chalk.yellow(`Skipping unsafe path: ${entry.path}`),
-						);
+						console.warn(chalk.yellow(`Skipping unsafe path: ${entry.path}`));
 						continue;
 					}
 
@@ -151,7 +151,9 @@ export function registerInstructionCommands(program: Command) {
 
 				const skippedMsg = skipped > 0 ? `, ${skipped} skipped` : "";
 				console.log(
-					chalk.green(`\n✔ Pulled ${written} instruction file(s)${skippedMsg}.\n`),
+					chalk.green(
+						`\n✔ Pulled ${written} instruction file(s)${skippedMsg}.\n`,
+					),
 				);
 			} catch (error) {
 				console.error(
@@ -185,9 +187,7 @@ export function registerInstructionCommands(program: Command) {
 				const localInstructions = await readLocalInstructions();
 				if (localInstructions.length === 0) {
 					console.log(
-						chalk.yellow(
-							"No instruction files found locally. Looked for:",
-						),
+						chalk.yellow("No instruction files found locally. Looked for:"),
 					);
 					for (const f of KNOWN_AGENT_INSTRUCTION_FILES) {
 						console.log(chalk.gray(`  ${f}`));
@@ -237,9 +237,7 @@ export function registerInstructionCommands(program: Command) {
 				const versionNote = data.version_number
 					? ` (saved as v${data.version_number})`
 					: "";
-				console.log(
-					chalk.green(`\n✔ Instructions pushed${versionNote}.\n`),
-				);
+				console.log(chalk.green(`\n✔ Instructions pushed${versionNote}.\n`));
 			} catch (error) {
 				console.error(
 					chalk.red("\n✖ Instructions push failed:"),
@@ -251,9 +249,7 @@ export function registerInstructionCommands(program: Command) {
 
 	instructionsCmd
 		.command("status")
-		.description(
-			"Check if local instruction files are in sync with the cloud",
-		)
+		.description("Check if local instruction files are in sync with the cloud")
 		.action(async () => {
 			await trackCommandUsage("instructions.status");
 			try {
@@ -294,8 +290,12 @@ export function registerInstructionCommands(program: Command) {
 				};
 				const cloudInstructions = cloudData.instructions ?? [];
 
-				const localMap = new Map(localInstructions.map((e) => [e.path, e.content]));
-				const cloudMap = new Map(cloudInstructions.map((e) => [e.path, e.content]));
+				const localMap = new Map(
+					localInstructions.map((e) => [e.path, e.content]),
+				);
+				const cloudMap = new Map(
+					cloudInstructions.map((e) => [e.path, e.content]),
+				);
 
 				const allPaths = new Set([...localMap.keys(), ...cloudMap.keys()]);
 
@@ -323,7 +323,9 @@ export function registerInstructionCommands(program: Command) {
 						);
 						inSync = false;
 					} else {
-						console.log(chalk.green(`  ✔ ${filePath}`) + chalk.gray(" (in sync)"));
+						console.log(
+							chalk.green(`  ✔ ${filePath}`) + chalk.gray(" (in sync)"),
+						);
 					}
 				}
 
@@ -485,9 +487,7 @@ export function registerInstructionCommands(program: Command) {
 					),
 				);
 				console.log(
-					chalk.gray(
-						"  Run `vem instructions pull` to update local files.",
-					),
+					chalk.gray("  Run `vem instructions pull` to update local files."),
 				);
 			} catch (error) {
 				console.error(

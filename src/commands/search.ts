@@ -119,9 +119,10 @@ export function registerSearchCommands(program: Command) {
 
 				console.log(chalk.blue(`Asking: "${cleanedQuestion}"...`));
 
-				const payload: { question: string; path?: string; taskRunId?: string } = {
-					question: cleanedQuestion,
-				};
+				const payload: { question: string; path?: string; taskRunId?: string } =
+					{
+						question: cleanedQuestion,
+					};
 				if (typeof options.path === "string" && options.path.trim()) {
 					payload.path = options.path.trim();
 				}

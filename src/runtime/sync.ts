@@ -82,7 +82,4 @@ async function processQueue(
 	}
 }
 
-export {
-	performPush,
-	processQueue,
-};
+export { performPush, processQueue };

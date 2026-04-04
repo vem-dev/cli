@@ -733,7 +733,14 @@ export function registerTaskCommands(program: Command) {
 				typeof options.status === "string" ? options.status : undefined;
 			const cycleFilter =
 				typeof options.cycle === "string" ? options.cycle.trim() : undefined;
-			const validStatuses = new Set(["todo", "ready", "in-review", "in-progress", "blocked", "done"]);
+			const validStatuses = new Set([
+				"todo",
+				"ready",
+				"in-review",
+				"in-progress",
+				"blocked",
+				"done",
+			]);
 			if (status && !validStatuses.has(status)) {
 				console.error(
 					chalk.red(
@@ -772,20 +779,25 @@ export function registerTaskCommands(program: Command) {
 				if (!ms) return chalk.gray("-");
 				const days = Math.floor(ms / 86400000);
 				const hrs = Math.floor((ms % 86400000) / 3600000);
-				return days > 0 ? chalk.white(`${days}d ${hrs}h`) : chalk.white(`${hrs}h`);
+				return days > 0
+					? chalk.white(`${days}d ${hrs}h`)
+					: chalk.white(`${hrs}h`);
 			};
 
 			filtered.forEach((t) => {
 				if (showFlow) {
-					const cycleTime = t.started_at && t.status === "done"
-						? Date.now() - new Date(t.started_at).getTime()
-						: undefined;
+					const cycleTime =
+						t.started_at && t.status === "done"
+							? Date.now() - new Date(t.started_at).getTime()
+							: undefined;
 					table.push([
 						chalk.white(t.id),
 						formatTaskStatusLabel(t.status, t.deleted_at),
 						t.title,
 						t.cycle_id ? chalk.cyan(t.cycle_id) : chalk.gray("-"),
-						t.impact_score !== undefined ? chalk.yellow(String(Math.round(t.impact_score))) : chalk.gray("-"),
+						t.impact_score !== undefined
+							? chalk.yellow(String(Math.round(t.impact_score)))
+							: chalk.gray("-"),
 						chalk.gray(t.assignee || "-"),
 						formatTaskPriority(t.priority),
 					]);
@@ -1216,7 +1228,10 @@ export function registerTaskCommands(program: Command) {
 			'Comma-separated validation steps (e.g. "pnpm build, pnpm test")',
 		)
 		.option("--cycle <id>", "Assign to a cycle (e.g. CYCLE-001)")
-		.option("--impact-score <score>", "Impact score 0-100 (RICE-based priority)")
+		.option(
+			"--impact-score <score>",
+			"Impact score 0-100 (RICE-based priority)",
+		)
 		.option("--actor <name>", "Actor name for task creation")
 		.option("-r, --reasoning <reasoning>", "Reasoning for creation")
 		.action(async (title, options) => {
@@ -1418,7 +1433,8 @@ export function registerTaskCommands(program: Command) {
 								},
 							},
 							{
-								message: "Type (feature, bug, chore, spike, enabler; optional):",
+								message:
+									"Type (feature, bug, chore, spike, enabler; optional):",
 								getInitial: () => typeInput,
 								setValue: (value) => {
 									typeInput = value;
@@ -1644,7 +1660,9 @@ export function registerTaskCommands(program: Command) {
 					normalizedType !== "spike" &&
 					normalizedType !== "enabler"
 				) {
-					throw new Error("type must be feature, bug, chore, spike, or enabler.");
+					throw new Error(
+						"type must be feature, bug, chore, spike, or enabler.",
+					);
 				}
 				const taskType =
 					normalizedType === "feature" ||
@@ -1810,7 +1828,10 @@ export function registerTaskCommands(program: Command) {
 			"Set validation steps (comma-separated). Use empty string to clear.",
 		)
 		.option("--cycle <id>", "Assign to a cycle (e.g. CYCLE-001)")
-		.option("--impact-score <score>", "Impact score 0-100 (RICE-based priority)")
+		.option(
+			"--impact-score <score>",
+			"Impact score 0-100 (RICE-based priority)",
+		)
 		.option("--actor <name>", "Actor name for task update")
 		.option("-r, --reasoning <reasoning>", "Reasoning for update")
 		.action(async (id, options) => {
@@ -1881,7 +1902,8 @@ export function registerTaskCommands(program: Command) {
 						actor: actorName,
 						cycle_id: cycleIdUpdate,
 						impact_score:
-							impactScoreUpdate !== undefined && !Number.isNaN(impactScoreUpdate)
+							impactScoreUpdate !== undefined &&
+							!Number.isNaN(impactScoreUpdate)
 								? impactScoreUpdate
 								: undefined,
 					});
@@ -2552,8 +2574,12 @@ export function registerTaskCommands(program: Command) {
 						return chalk.white(`${mins}m`);
 					};
 					console.log(chalk.bold(`\n⏱  Flow Metrics: ${id} — ${task.title}\n`));
-					console.log(`  ${chalk.gray("Lead time (created → done):")}  ${fmtMs(metrics.lead_time_ms)}`);
-					console.log(`  ${chalk.gray("Cycle time (started → done):")} ${fmtMs(metrics.cycle_time_ms)}`);
+					console.log(
+						`  ${chalk.gray("Lead time (created → done):")}  ${fmtMs(metrics.lead_time_ms)}`,
+					);
+					console.log(
+						`  ${chalk.gray("Cycle time (started → done):")} ${fmtMs(metrics.cycle_time_ms)}`,
+					);
 					if (Object.keys(metrics.time_in_status).length > 0) {
 						console.log(chalk.gray("\n  Time in each status:"));
 						for (const [status, ms] of Object.entries(metrics.time_in_status)) {
@@ -2571,15 +2597,27 @@ export function registerTaskCommands(program: Command) {
 						return chalk.white(`${hrs}h`);
 					};
 					console.log(chalk.bold("\n📊  Project Flow Summary\n"));
-					console.log(`  ${chalk.gray("WIP (active tasks):")}         ${chalk.yellow(String(summary.wip_count))}`);
-					console.log(`  ${chalk.gray("Throughput (last 7d):")}        ${chalk.white(String(summary.throughput_last_7d))} tasks`);
-					console.log(`  ${chalk.gray("Throughput (last 30d):")}       ${chalk.white(String(summary.throughput_last_30d))} tasks`);
-					console.log(`  ${chalk.gray("Avg cycle time:")}              ${fmtMs(summary.avg_cycle_time_ms)}`);
-					console.log(`  ${chalk.gray("Avg lead time:")}               ${fmtMs(summary.avg_lead_time_ms)}`);
+					console.log(
+						`  ${chalk.gray("WIP (active tasks):")}         ${chalk.yellow(String(summary.wip_count))}`,
+					);
+					console.log(
+						`  ${chalk.gray("Throughput (last 7d):")}        ${chalk.white(String(summary.throughput_last_7d))} tasks`,
+					);
+					console.log(
+						`  ${chalk.gray("Throughput (last 30d):")}       ${chalk.white(String(summary.throughput_last_30d))} tasks`,
+					);
+					console.log(
+						`  ${chalk.gray("Avg cycle time:")}              ${fmtMs(summary.avg_cycle_time_ms)}`,
+					);
+					console.log(
+						`  ${chalk.gray("Avg lead time:")}               ${fmtMs(summary.avg_lead_time_ms)}`,
+					);
 					console.log();
 				}
 			} catch (error: any) {
-				console.error(chalk.red(`Failed to get flow metrics: ${error.message}`));
+				console.error(
+					chalk.red(`Failed to get flow metrics: ${error.message}`),
+				);
 			}
 		});
 
@@ -2594,10 +2632,15 @@ export function registerTaskCommands(program: Command) {
 				if (!id) {
 					const tasks = await taskService.getTasks();
 					const unscored = tasks.filter(
-						(t) => t.impact_score === undefined && t.status !== "done" && !t.deleted_at,
+						(t) =>
+							t.impact_score === undefined &&
+							t.status !== "done" &&
+							!t.deleted_at,
 					);
 					if (unscored.length === 0) {
-						console.log(chalk.green("\n✔ All active tasks have impact scores.\n"));
+						console.log(
+							chalk.green("\n✔ All active tasks have impact scores.\n"),
+						);
 						return;
 					}
 					const table = new Table({
@@ -2617,7 +2660,11 @@ export function registerTaskCommands(program: Command) {
 					}
 					console.log(chalk.bold("\n🎯  Impact Scores\n"));
 					console.log(table.toString());
-					console.log(chalk.gray(`\n  Unscored: ${unscored.length} task(s). Use: vem task score <id> --set <0-100>\n`));
+					console.log(
+						chalk.gray(
+							`\n  Unscored: ${unscored.length} task(s). Use: vem task score <id> --set <0-100>\n`,
+						),
+					);
 					return;
 				}
 
@@ -2630,7 +2677,9 @@ export function registerTaskCommands(program: Command) {
 				if (options.set !== undefined) {
 					const score = Number.parseFloat(options.set);
 					if (Number.isNaN(score) || score < 0 || score > 100) {
-						console.error(chalk.red("Score must be a number between 0 and 100."));
+						console.error(
+							chalk.red("Score must be a number between 0 and 100."),
+						);
 						process.exitCode = 1;
 						return;
 					}
@@ -2638,11 +2687,17 @@ export function registerTaskCommands(program: Command) {
 						impact_score: score,
 						reasoning: options.reasoning,
 					});
-					console.log(chalk.green(`\n✔ Impact score for ${id} set to ${score}\n`));
+					console.log(
+						chalk.green(`\n✔ Impact score for ${id} set to ${score}\n`),
+					);
 				} else {
 					console.log(chalk.bold(`\n🎯  ${id}: ${task.title}`));
-					console.log(`  Impact score: ${task.impact_score !== undefined ? chalk.yellow(String(Math.round(task.impact_score))) : chalk.gray("not set")}`);
-					console.log(chalk.gray(`  Set with: vem task score ${id} --set <0-100>\n`));
+					console.log(
+						`  Impact score: ${task.impact_score !== undefined ? chalk.yellow(String(Math.round(task.impact_score))) : chalk.gray("not set")}`,
+					);
+					console.log(
+						chalk.gray(`  Set with: vem task score ${id} --set <0-100>\n`),
+					);
 				}
 			} catch (error: any) {
 				console.error(chalk.red(`Failed to manage score: ${error.message}`));
@@ -2681,7 +2736,8 @@ export function registerTaskCommands(program: Command) {
 				const actorName = resolveActorName(options.actor);
 				await taskService.updateTask(id, {
 					status: "ready",
-					reasoning: options.reasoning || "Marked as refined and ready to start.",
+					reasoning:
+						options.reasoning || "Marked as refined and ready to start.",
 					actor: actorName,
 				});
 				console.log(chalk.cyan(`\n✔ Task ${id} marked as ready\n`));

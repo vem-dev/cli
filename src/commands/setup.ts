@@ -355,7 +355,6 @@ export function registerSetupCommands(program: Command) {
 							chalk.yellow(`⚠ Agent instruction sync skipped: ${message}`),
 						);
 					}
-
 				} else if (!apiKey) {
 					console.log(
 						chalk.gray(

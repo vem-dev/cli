@@ -3,11 +3,7 @@ import chalk from "chalk";
 import Table from "cli-table3";
 import type { Command } from "commander";
 
-import {
-	cycleService,
-	taskService,
-	trackCommandUsage,
-} from "../runtime.js";
+import { cycleService, taskService, trackCommandUsage } from "../runtime.js";
 
 const APPETITE_LABELS: Record<string, string> = {
 	small: "~1 week",
@@ -34,7 +30,11 @@ export function registerCycleCommands(program: Command) {
 			try {
 				const cycles = await cycleService.getCycles();
 				if (cycles.length === 0) {
-					console.log(chalk.gray("\n  No cycles yet. Create one with: vem cycle create\n"));
+					console.log(
+						chalk.gray(
+							"\n  No cycles yet. Create one with: vem cycle create\n",
+						),
+					);
 					return;
 				}
 
@@ -51,7 +51,9 @@ export function registerCycleCommands(program: Command) {
 						STATUS_LABEL[c.status] ?? chalk.gray(c.status),
 						c.name,
 						chalk.gray(c.goal.length > 38 ? `${c.goal.slice(0, 38)}…` : c.goal),
-						c.appetite ? chalk.gray(APPETITE_LABELS[c.appetite] ?? c.appetite) : chalk.gray("—"),
+						c.appetite
+							? chalk.gray(APPETITE_LABELS[c.appetite] ?? c.appetite)
+							: chalk.gray("—"),
 						c.start_at
 							? chalk.white(
 									new Date(c.start_at).toLocaleDateString(undefined, {
@@ -100,7 +102,7 @@ export function registerCycleCommands(program: Command) {
 				if (!cycleName || !goalInput) {
 					console.error(
 						chalk.red(
-							"\n✖ Both a name and --goal are required.\n  Example: vem cycle create \"Auth hardening\" --goal \"Harden auth flows and add MFA\" --appetite medium\n",
+							'\n✖ Both a name and --goal are required.\n  Example: vem cycle create "Auth hardening" --goal "Harden auth flows and add MFA" --appetite medium\n',
 						),
 					);
 					process.exitCode = 1;
@@ -178,7 +180,9 @@ export function registerCycleCommands(program: Command) {
 					process.exitCode = 1;
 					return;
 				}
-				const updated = await cycleService.updateCycle(id, { status: "active" });
+				const updated = await cycleService.updateCycle(id, {
+					status: "active",
+				});
 				console.log(chalk.cyan(`\n✔ Cycle ${id} is now active\n`));
 				console.log(`  ${chalk.white(updated.name)}`);
 				console.log(`  ${chalk.gray("Goal:")} ${updated.goal}`);
@@ -204,7 +208,9 @@ export function registerCycleCommands(program: Command) {
 					console.log(chalk.yellow(`\n  Cycle ${id} is already closed.\n`));
 					return;
 				}
-				const updated = await cycleService.updateCycle(id, { status: "closed" });
+				const updated = await cycleService.updateCycle(id, {
+					status: "closed",
+				});
 				console.log(chalk.green(`\n✔ Cycle ${id} closed\n`));
 
 				// Show a brief summary of tasks in this cycle
@@ -220,7 +226,9 @@ export function registerCycleCommands(program: Command) {
 					);
 				}
 				console.log(
-					chalk.gray(`  Closed: ${new Date(updated.closed_at!).toLocaleDateString()}\n`),
+					chalk.gray(
+						`  Closed: ${new Date(updated.closed_at!).toLocaleDateString()}\n`,
+					),
 				);
 			} catch (error: any) {
 				console.error(chalk.red(`Failed to close cycle: ${error.message}`));
@@ -294,8 +302,7 @@ export function registerCycleCommands(program: Command) {
 					done: 5,
 				};
 				cycleTasks.sort(
-					(a, b) =>
-						(statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9),
+					(a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9),
 				);
 
 				const table = new Table({
@@ -307,12 +314,18 @@ export function registerCycleCommands(program: Command) {
 
 				const fmtStatus = (s: string) => {
 					switch (s) {
-						case "in-progress": return chalk.blue("IN PROG");
-						case "in-review": return chalk.magenta("IN REVW");
-						case "ready": return chalk.cyan("READY");
-						case "blocked": return chalk.yellow("BLOCKED");
-						case "done": return chalk.green("DONE");
-						default: return chalk.gray("TODO");
+						case "in-progress":
+							return chalk.blue("IN PROG");
+						case "in-review":
+							return chalk.magenta("IN REVW");
+						case "ready":
+							return chalk.cyan("READY");
+						case "blocked":
+							return chalk.yellow("BLOCKED");
+						case "done":
+							return chalk.green("DONE");
+						default:
+							return chalk.gray("TODO");
 					}
 				};
 
@@ -327,16 +340,22 @@ export function registerCycleCommands(program: Command) {
 								? chalk.red(t.priority)
 								: chalk.white(t.priority)
 							: chalk.gray("—"),
-						score !== undefined ? chalk.yellow(String(Math.round(score))) : chalk.gray("—"),
+						score !== undefined
+							? chalk.yellow(String(Math.round(score)))
+							: chalk.gray("—"),
 					]);
 				}
 
 				const done = cycleTasks.filter((t) => t.status === "done").length;
-				console.log(`\n  ${chalk.white(String(done))}/${chalk.white(String(cycleTasks.length))} tasks done\n`);
+				console.log(
+					`\n  ${chalk.white(String(done))}/${chalk.white(String(cycleTasks.length))} tasks done\n`,
+				);
 				console.log(table.toString());
 				console.log();
 			} catch (error: any) {
-				console.error(chalk.red(`Failed to show cycle focus: ${error.message}`));
+				console.error(
+					chalk.red(`Failed to show cycle focus: ${error.message}`),
+				);
 			}
 		});
 }

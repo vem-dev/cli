@@ -29,11 +29,14 @@ import {
 	processQueue,
 	readStdin,
 	showWorkflowHint,
+	syncProjectMemoryToRemote,
 	syncService,
 	taskService,
 	trackCommandUsage,
 	WEB_URL,
 } from "../runtime.js";
+
+import { syncParsedTaskUpdatesToRemote } from "./agent.js";
 
 export function registerSyncCommands(program: Command) {
 	program
@@ -444,6 +447,44 @@ export function registerSyncCommands(program: Command) {
 				}
 
 				const update = parseVemUpdateBlock(input);
+
+				// ── Sandbox mode: POST directly to the API ─────────────────────────
+				// When running inside a cloud sandbox container the env vars
+				// VEM_TASK_RUN_ID and VEM_API_KEY are injected by the runner/dispatcher.
+				// In this case skip all local .vem/ file operations (the workspace doesn't
+				// exist in the container) and submit the parsed update directly to the API.
+				const sandboxRunId = process.env.VEM_TASK_RUN_ID;
+				const sandboxApiKey = process.env.VEM_API_KEY;
+				const sandboxApiUrl =
+					process.env.VEM_API_URL || "http://localhost:3002";
+
+				if (sandboxRunId && sandboxApiKey) {
+					const res = await fetch(
+						`${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-update-structured`,
+						{
+							method: "POST",
+							headers: {
+								Authorization: `Bearer ${sandboxApiKey}`,
+								"Content-Type": "application/json",
+							},
+							body: JSON.stringify({ update }),
+						},
+					);
+					if (!res.ok) {
+						const errText = await res.text().catch(() => "");
+						console.error(
+							chalk.red("[vem finalize] API submission failed:"),
+							res.status,
+							errText,
+						);
+						process.exitCode = 1;
+					} else {
+						console.log(chalk.green("\n✔ vem update submitted to API\n"));
+					}
+					return;
+				}
+
+				// ── Local mode: write to .vem/ files and sync to cloud ─────────────
 				const result = await applyVemUpdate(update);
 
 				console.log(chalk.green("\n✔ vem update applied\n"));
@@ -466,6 +507,13 @@ export function registerSyncCommands(program: Command) {
 						chalk.gray(`Changelog entries: ${result.changelogLines.length}`),
 					);
 				}
+				if (result.newCycles.length > 0) {
+					console.log(
+						chalk.gray(
+							`New cycles: ${result.newCycles.map((c) => c.name).join(", ")}`,
+						),
+					);
+				}
 				if (result.decisionsAppended) {
 					console.log(chalk.gray("Decisions updated."));
 				}
@@ -480,6 +528,26 @@ export function registerSyncCommands(program: Command) {
 				}
 				if (result.contextUpdated) {
 					console.log(chalk.gray("Context updated."));
+				}
+
+				// Sync to remote so standalone `vem finalize` calls (e.g. from agents
+				// running outside of `vem agent --auto-exit`) also push to cloud.
+				// syncParsedTaskUpdatesToRemote updates per-task metadata (evidence,
+				// related_decisions, changelog reasoning) via the tasks API.
+				const configService = new ConfigService();
+				await syncParsedTaskUpdatesToRemote(
+					configService,
+					update,
+					result,
+				).catch((err: unknown) => {
+					console.error(
+						chalk.yellow("[vem finalize] syncParsed failed:"),
+						err instanceof Error ? err.message : String(err),
+					);
+				});
+				const synced = await syncProjectMemoryToRemote().catch(() => false);
+				if (synced) {
+					console.log(chalk.gray("✔ Synced to cloud."));
 				}
 			} catch (error) {
 				if (error instanceof Error) {

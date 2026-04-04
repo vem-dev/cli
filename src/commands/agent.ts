@@ -1,3 +1,5 @@
+declare const __VERSION__: string;
+
 import { execSync, spawn } from "node:child_process";
 import { access, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -54,18 +56,23 @@ function truncateForDisplay(value: string, maxChars: number): string {
 	return `${trimmed.slice(0, Math.max(0, maxChars - 15)).trimEnd()}\n...[truncated]`;
 }
 
-type AgentTask = Awaited<ReturnType<typeof taskService.getTasks>>[number] & {
-	db_id?: string;
-};
+type AgentTask = Awaited<ReturnType<typeof taskService.getTasks>>[number];
 
-const AGENT_TASK_STATUSES = new Set(["todo", "in-review", "in-progress", "blocked", "done"]);
+const AGENT_TASK_STATUSES = new Set([
+	"todo",
+	"in-review",
+	"in-progress",
+	"blocked",
+	"done",
+]);
 const MAX_CHILD_TASKS_IN_PROMPT = 12;
 const TASK_STATUS_ORDER: Record<AgentTask["status"], number> = {
 	"in-review": 0,
 	"in-progress": 1,
 	todo: 2,
-	blocked: 3,
-	done: 4,
+	ready: 3,
+	blocked: 4,
+	done: 5,
 };
 
 const debugAgentSync = (...messages: string[]) => {
@@ -153,38 +160,25 @@ const fetchRemoteAgentTasks = async (
 
 const fetchRemoteAgentTaskById = async (
 	configService: ConfigService,
-	taskId: string,
+	_taskId: string,
+	dbId: string,
 ): Promise<AgentTask | null> => {
 	try {
-		const [apiKey, projectId] = await Promise.all([
-			resolveApiKey(configService),
-			configService.getProjectId(),
-		]);
-		if (!apiKey || !projectId) return null;
+		const apiKey = await resolveApiKey(configService);
+		if (!apiKey) return null;
 
-		const query = new URLSearchParams({
-			id: taskId,
-			include_deleted: "true",
-		});
-		const response = await fetch(
-			`${API_URL}/projects/${projectId}/tasks?${query.toString()}`,
-			{
-				headers: {
-					Authorization: `Bearer ${apiKey}`,
-					...(await buildDeviceHeaders(configService)),
-				},
+		const response = await fetch(`${API_URL}/tasks/${encodeURIComponent(dbId)}`, {
+			headers: {
+				Authorization: `Bearer ${apiKey}`,
+				...(await buildDeviceHeaders(configService)),
 			},
-		);
+		});
 		if (!response.ok) return null;
 
-		const body = (await response.json()) as { tasks?: unknown };
-		if (!Array.isArray(body.tasks)) return null;
+		const body = (await response.json()) as { task?: unknown };
+		if (!body.task) return null;
 
-		const normalized = body.tasks
-			.map((task) => normalizeAgentTask(task))
-			.filter((task): task is AgentTask => Boolean(task));
-		if (normalized.length === 0) return null;
-		return normalized.find((task) => task.id === taskId) ?? normalized[0];
+		return normalizeAgentTask(body.task);
 	} catch {
 		return null;
 	}
@@ -216,58 +210,45 @@ const updateTaskMetaRemote = async (
 	patch: {
 		status?: AgentTask["status"];
 		evidence?: string[];
-		related_decisions?: string[];
+		related_decisions?: RelatedDecisionRef[];
 		sessions?: unknown[];
 		reasoning?: string;
 		actor?: string;
+		// Task memory fields (written to task_memory_entries)
+		task_context?: string | null;
+		task_context_summary?: string | null;
+		changelog_entry?: string | null;
+		// Additional task fields synced from vem_update
+		title?: string;
+		description?: string | null;
+		priority?: string;
+		tags?: string[];
+		type?: string | null;
+		estimate_hours?: number | null;
+		depends_on?: string[];
+		blocked_by?: string[];
+		recurrence_rule?: string | null;
+		owner_id?: string | null;
+		reviewer_id?: string | null;
+		validation_steps?: string[];
+		user_notes?: string | null;
+		github_issue_number?: number | null;
+		parent_id?: string | null;
+		subtask_order?: number | null;
+		due_at?: string | null;
+		raw_vem_update?: unknown;
+		cli_version?: string;
 	},
 ): Promise<boolean> => {
 	try {
-		const [apiKey, projectId] = await Promise.all([
-			resolveApiKey(configService),
-			configService.getProjectId(),
-		]);
-		if (!apiKey || !projectId) {
-			debugAgentSync(
-				"updateTaskMetaRemote skipped:",
-				`apiKey=${Boolean(apiKey)}`,
-				`projectId=${Boolean(projectId)}`,
-			);
+		const apiKey = await resolveApiKey(configService);
+		if (!apiKey) {
+			debugAgentSync("updateTaskMetaRemote skipped: no apiKey");
 			return false;
 		}
 
-		const query = new URLSearchParams({
-			id: task.id,
-			include_deleted: "true",
-		});
-		const lookupResponse = await fetch(
-			`${API_URL}/projects/${projectId}/tasks?${query.toString()}`,
-			{
-				headers: {
-					Authorization: `Bearer ${apiKey}`,
-					...(await buildDeviceHeaders(configService)),
-				},
-			},
-		);
-		if (!lookupResponse.ok) {
-			debugAgentSync(
-				"task lookup failed:",
-				String(lookupResponse.status),
-				lookupResponse.statusText,
-			);
-			return false;
-		}
-
-		const lookupBody = (await lookupResponse.json()) as {
-			tasks?: Array<Record<string, unknown>>;
-		};
-		const remoteTask = Array.isArray(lookupBody.tasks)
-			? (lookupBody.tasks.find(
-					(entry) => asTrimmedString(entry.id) === task.id,
-				) ?? lookupBody.tasks[0])
-			: null;
-		const dbId =
-			asTrimmedString(remoteTask?.db_id) ?? asTrimmedString(task.db_id);
+		// Use db_id (UUID) directly — avoids external_id lookup entirely.
+		const dbId = asTrimmedString(task.db_id);
 		if (!dbId) {
 			debugAgentSync("task lookup missing db_id", `task=${task.id}`);
 			return false;
@@ -305,31 +286,27 @@ const updateTaskMetaRemote = async (
 				: undefined;
 
 		const payload: Record<string, unknown> = {
-			title: asTrimmedString(remoteTask?.title) ?? task.title,
-			description:
-				asTrimmedString(remoteTask?.description) ?? task.description ?? null,
-			status: asTrimmedString(remoteTask?.status) ?? task.status,
-			priority: asTrimmedString(remoteTask?.priority) ?? "medium",
-			tags: normalizeStringArray(remoteTask?.tags),
-			type: asTrimmedString(remoteTask?.type) ?? null,
-			estimate_hours: normalizeNumber(remoteTask?.estimate_hours),
-			depends_on: normalizeStringArray(remoteTask?.depends_on),
-			blocked_by: normalizeStringArray(remoteTask?.blocked_by),
-			recurrence_rule: asTrimmedString(remoteTask?.recurrence_rule) ?? null,
-			owner_id: asTrimmedString(remoteTask?.owner_id) ?? null,
-			reviewer_id: asTrimmedString(remoteTask?.reviewer_id) ?? null,
-			parent_id: asTrimmedString(remoteTask?.parent_id) ?? null,
+			title: asTrimmedString(task.title) ?? task.title,
+			description: asTrimmedString(task.description) ?? null,
+			priority: asTrimmedString(task.priority) ?? "medium",
+			tags: normalizeStringArray(task.tags),
+			type: asTrimmedString(task.type) ?? null,
+			estimate_hours: normalizeNumber(task.estimate_hours),
+			depends_on: normalizeStringArray(task.depends_on),
+			blocked_by: normalizeStringArray(task.blocked_by),
+			recurrence_rule: asTrimmedString(task.recurrence_rule) ?? null,
+			owner_id: asTrimmedString(task.owner_id) ?? null,
+			reviewer_id: asTrimmedString(task.reviewer_id) ?? null,
+			parent_id: asTrimmedString(task.parent_id) ?? null,
 			subtask_order:
-				typeof remoteTask?.subtask_order === "number"
-					? remoteTask.subtask_order
-					: null,
-			due_at: asTrimmedString(remoteTask?.due_at) ?? null,
-			validation_steps: normalizeStringArray(remoteTask?.validation_steps),
-			evidence: normalizeStringArray(remoteTask?.evidence),
-			related_decisions: Array.isArray(remoteTask?.related_decisions)
-				? (remoteTask.related_decisions as RelatedDecisionRef[])
+				typeof task.subtask_order === "number" ? task.subtask_order : null,
+			due_at: asTrimmedString(task.due_at) ?? null,
+			validation_steps: normalizeStringArray(task.validation_steps),
+			evidence: normalizeStringArray(task.evidence),
+			related_decisions: Array.isArray(task.related_decisions)
+				? (task.related_decisions as RelatedDecisionRef[])
 				: [],
-			deleted_at: asTrimmedString(remoteTask?.deleted_at) ?? null,
+			deleted_at: asTrimmedString(task.deleted_at) ?? null,
 		};
 
 		if (patch.status !== undefined) payload.status = patch.status;
@@ -345,6 +322,42 @@ const updateTaskMetaRemote = async (
 			payload.actor =
 				patch.actor.trim().length > 0 ? patch.actor.trim() : undefined;
 		}
+		// Apply any additional task fields from the vem_update patch
+		if (patch.title !== undefined) payload.title = patch.title;
+		if (patch.description !== undefined)
+			payload.description = patch.description;
+		if (patch.priority !== undefined) payload.priority = patch.priority;
+		if (patch.tags !== undefined) payload.tags = patch.tags;
+		if (patch.type !== undefined) payload.type = patch.type;
+		if (patch.estimate_hours !== undefined)
+			payload.estimate_hours = patch.estimate_hours;
+		if (patch.depends_on !== undefined) payload.depends_on = patch.depends_on;
+		if (patch.blocked_by !== undefined) payload.blocked_by = patch.blocked_by;
+		if (patch.recurrence_rule !== undefined)
+			payload.recurrence_rule = patch.recurrence_rule;
+		if (patch.owner_id !== undefined) payload.owner_id = patch.owner_id;
+		if (patch.reviewer_id !== undefined)
+			payload.reviewer_id = patch.reviewer_id;
+		if (patch.validation_steps !== undefined)
+			payload.validation_steps = patch.validation_steps;
+		if (patch.user_notes !== undefined) payload.user_notes = patch.user_notes;
+		if (patch.github_issue_number !== undefined)
+			payload.github_issue_number = patch.github_issue_number;
+		if (patch.parent_id !== undefined) payload.parent_id = patch.parent_id;
+		if (patch.subtask_order !== undefined)
+			payload.subtask_order = patch.subtask_order;
+		if (patch.due_at !== undefined) payload.due_at = patch.due_at;
+		if (patch.raw_vem_update !== undefined)
+			payload.raw_vem_update = patch.raw_vem_update;
+		if (patch.cli_version !== undefined)
+			payload.cli_version = patch.cli_version;
+		// Task memory fields → written to task_memory_entries on the API side
+		if (patch.task_context !== undefined)
+			payload.task_context = patch.task_context;
+		if (patch.task_context_summary !== undefined)
+			payload.task_context_summary = patch.task_context_summary;
+		if (patch.changelog_entry !== undefined)
+			payload.changelog_entry = patch.changelog_entry;
 
 		const response = await fetch(
 			`${API_URL}/tasks/${encodeURIComponent(dbId)}/meta`,
@@ -457,14 +470,66 @@ export const buildRemoteTaskContextPatch = (
 	return Object.keys(payload).length > 0 ? payload : null;
 };
 
-const syncParsedTaskUpdatesToRemote = async (
+export const syncParsedTaskUpdatesToRemote = async (
 	configService: ConfigService,
 	update: VemUpdate,
 	result: ApplyVemUpdateResult | null,
+	activeTask?: AgentTask | null,
 ): Promise<void> => {
-	if (!result || !update.tasks || update.tasks.length === 0) return;
+	const hasTasks = Array.isArray(update.tasks) && update.tasks.length > 0;
 
-	const patchById = new Map(update.tasks.map((entry) => [entry.id, entry]));
+	// When the vem_update has no task entries but we have an active task, still
+	// record the raw vem_update payload so it's queryable from task action history.
+	if (!hasTasks) {
+		const hasContent =
+			(typeof update.context === "string" && update.context.trim().length > 0) ||
+			(Array.isArray(update.changelog_append) &&
+				update.changelog_append.length > 0) ||
+			(typeof update.changelog_append === "string" &&
+				update.changelog_append.trim().length > 0);
+		if (activeTask && hasContent) {
+			const changelogEntry = Array.isArray(update.changelog_append)
+				? update.changelog_append.join("\n").trim() || null
+				: (update.changelog_append?.trim() ?? null);
+			await updateTaskMetaRemote(configService, activeTask, {
+				raw_vem_update: JSON.parse(JSON.stringify(update)),
+				cli_version: __VERSION__,
+				...(changelogEntry ? { changelog_entry: changelogEntry } : {}),
+			});
+		}
+		return;
+	}
+
+	// Use changelog_append as reasoning so the Changelog card on the task page
+	// shows what was done in this agent session.
+	if (!result) return;
+	const changelogReasoning = Array.isArray(update.changelog_append)
+		? update.changelog_append.join("\n").trim()
+		: (update.changelog_append?.trim() ?? undefined);
+
+	// Resolve db_id for all updated tasks in one remote fetch if any are missing.
+	// This populates and caches db_id locally so future runs skip the fetch.
+	const tasksMissingDbId = result.updatedTasks.filter(
+		(t) => !asTrimmedString((t as AgentTask).db_id),
+	);
+	if (tasksMissingDbId.length > 0) {
+		const remoteTasks = await fetchRemoteAgentTasks(configService);
+		if (remoteTasks) {
+			const remoteById = new Map(
+				remoteTasks.visible.map((t) => [t.id, t]),
+			);
+			for (const task of tasksMissingDbId) {
+				const remote = remoteById.get(task.id);
+				if (remote?.db_id) {
+					(task as AgentTask).db_id = remote.db_id;
+					// Persist db_id to local task storage so future runs skip this fetch.
+					await taskService.updateTask(task.id, { db_id: remote.db_id });
+				}
+			}
+		}
+	}
+
+	const patchById = new Map((update.tasks ?? []).map((entry) => [entry.id, entry]));
 	for (const updatedTask of result.updatedTasks) {
 		const patch = patchById.get(updatedTask.id);
 		if (!patch) continue;
@@ -478,18 +543,52 @@ const syncParsedTaskUpdatesToRemote = async (
 			sessions: Array.isArray(updatedTask.sessions)
 				? (updatedTask.sessions as unknown[])
 				: undefined,
-			reasoning: patch.reasoning,
+			reasoning: patch.reasoning ?? changelogReasoning,
 			actor: patch.actor,
+			// Forward all other task fields that may have changed
+			...(patch.title !== undefined ? { title: patch.title } : {}),
+			...(patch.description !== undefined
+				? { description: patch.description }
+				: {}),
+			...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+			...(patch.tags !== undefined ? { tags: patch.tags } : {}),
+			...(patch.type !== undefined ? { type: patch.type } : {}),
+			...(patch.estimate_hours !== undefined
+				? { estimate_hours: patch.estimate_hours }
+				: {}),
+			...(patch.depends_on !== undefined
+				? { depends_on: patch.depends_on }
+				: {}),
+			...(patch.blocked_by !== undefined
+				? { blocked_by: patch.blocked_by }
+				: {}),
+			...(patch.recurrence_rule !== undefined
+				? { recurrence_rule: patch.recurrence_rule }
+				: {}),
+			...(patch.owner_id !== undefined ? { owner_id: patch.owner_id } : {}),
+			...(patch.reviewer_id !== undefined
+				? { reviewer_id: patch.reviewer_id }
+				: {}),
+			...(patch.validation_steps !== undefined
+				? { validation_steps: patch.validation_steps }
+				: {}),
+			...(patch.user_notes !== undefined
+				? { user_notes: patch.user_notes }
+				: {}),
+			...(patch.github_issue_number !== undefined
+				? { github_issue_number: patch.github_issue_number }
+				: {}),
+			...(patch.parent_id !== undefined ? { parent_id: patch.parent_id } : {}),
+			...(patch.subtask_order !== undefined
+				? { subtask_order: patch.subtask_order }
+				: {}),
+			...(patch.due_at !== undefined ? { due_at: patch.due_at } : {}),
+			raw_vem_update: JSON.parse(JSON.stringify(update)),
+			cli_version: __VERSION__,
+			// Task memory fields — stored in task_memory_entries on the API side.
+			...(buildRemoteTaskContextPatch(patch, updatedTask) ?? {}),
+			changelog_entry: changelogReasoning ?? null,
 		});
-
-		const taskContextPatch = buildRemoteTaskContextPatch(patch, updatedTask);
-		if (taskContextPatch) {
-			await updateTaskContextRemote(
-				configService,
-				remoteTaskRef,
-				taskContextPatch,
-			);
-		}
 	}
 };
 
@@ -1226,7 +1325,7 @@ This file is generated for the active task. Update task context via:
 							scopedChildTaskIds.length > 0
 								? ` and child tasks ${scopedChildTaskIds.join(", ")}`
 								: "";
-							// In auto-exit (sandbox/cloud) mode the agent must complete the
+						// In auto-exit (sandbox/cloud) mode the agent must complete the
 						// full task in one session. Use an action-first prompt so copilot
 						// doesn't stop after reading context files.
 						const autonomousPrompt = options.autoExit
@@ -1236,7 +1335,11 @@ This file is generated for the active task. Update task context via:
 						if (options.autoExit) {
 							// Non-interactive (sandbox/cloud) mode: use -p + --yolo so copilot
 							// runs fully autonomously without needing a TTY for the plan menu.
-							console.log(chalk.cyan("Auto-injecting context via -p flag (autonomous mode)..."));
+							console.log(
+								chalk.cyan(
+									"Auto-injecting context via -p flag (autonomous mode)...",
+								),
+							);
 							launchArgs = [...launchArgs, "-p", autonomousPrompt, "--yolo"];
 						} else {
 							// Interactive (local terminal) mode: use -i so the user sees the
@@ -1510,6 +1613,7 @@ This file is generated for the active task. Update task context via:
 								configService,
 								parsedAgentUpdate,
 								appliedUpdateResult,
+								activeTask,
 							);
 							const syncedMemory = await syncProjectMemoryToRemote();
 							if (syncedMemory) {
@@ -1603,9 +1707,14 @@ This file is generated for the active task. Update task context via:
 				let localActiveTask = activeTask
 					? freshTasks.find((t) => t.id === activeTask.id)
 					: undefined;
-				const remoteActiveTask = activeTask
-					? await fetchRemoteAgentTaskById(configService, activeTask.id)
-					: null;
+				const remoteActiveTask =
+					activeTask?.db_id
+						? await fetchRemoteAgentTaskById(
+								configService,
+								activeTask.id,
+								activeTask.db_id,
+							)
+						: null;
 				if (
 					localActiveTask &&
 					remoteActiveTask &&
@@ -1756,20 +1865,18 @@ This file is generated for the active task. Update task context via:
 						}
 
 						const remoteTaskRef = (freshActiveTask ?? activeTask) as AgentTask;
-						const [remoteMetaUpdated, remoteContextUpdated] = await Promise.all(
-							[
-								updateTaskMetaRemote(configService, remoteTaskRef, {
-									status: "done",
-									evidence: [evidence.desc],
-									reasoning: reasoningText,
-									actor: agentName,
-								}),
-								contextSummary !== undefined
-									? updateTaskContextRemote(configService, remoteTaskRef, {
-											task_context_summary: contextSummary || null,
-										})
-									: Promise.resolve(false),
-							],
+						const remoteMetaUpdated = await updateTaskMetaRemote(
+							configService,
+							remoteTaskRef,
+							{
+								status: "done",
+								evidence: [evidence.desc],
+								reasoning: reasoningText,
+								actor: agentName,
+								...(contextSummary !== undefined
+									? { task_context_summary: contextSummary || null }
+									: {}),
+							},
 						);
 
 						activeTask.status = "done";
@@ -1784,7 +1891,7 @@ This file is generated for the active task. Update task context via:
 						console.log(
 							chalk.green(
 								`\n✔ Task ${freshActiveTask.id} marked as done${
-									remoteMetaUpdated || remoteContextUpdated
+									remoteMetaUpdated
 										? " (cloud + local cache)"
 										: " (local cache)"
 								}.`,
