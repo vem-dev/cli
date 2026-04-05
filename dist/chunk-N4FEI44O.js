@@ -14727,7 +14727,22 @@ var TaskService = class {
     const nextReviewer = taskPatch.reviewer_id ?? currentTask.reviewer_id;
     const taskContextProvided = taskPatch.task_context !== void 0;
     const taskContextSummaryProvided = taskPatch.task_context_summary !== void 0;
-    const nextTaskContext = taskContextProvided ? normalizeText(taskPatch.task_context) : currentTask.task_context;
+    const nextTaskContext = taskContextProvided ? (() => {
+      const newCtx = normalizeText(taskPatch.task_context);
+      if (!newCtx)
+        return newCtx;
+      const prev = currentTask.task_context?.trim();
+      if (!prev)
+        return newCtx;
+      const dateLabel = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+      return `${prev}
+
+---
+
+**Iteration \xB7 ${dateLabel}**
+
+${newCtx}`;
+    })() : currentTask.task_context;
     let nextTaskContextSummary = taskContextSummaryProvided ? normalizeText(taskPatch.task_context_summary) : currentTask.task_context_summary;
     const nextValidationSteps = validationProvided ? normalizeStringArray(taskPatch.validation_steps) ?? [] : currentTask.validation_steps;
     const cycleIdProvided = hasOwn("cycle_id");
@@ -15309,9 +15324,27 @@ async function writeCurrentState(value) {
     return false;
   const dir = await getVemDir();
   const currentStatePath = path6.join(dir, CURRENT_STATE_FILE);
-  const next = value.trim().length > 0 ? `${value.trim()}
-` : "";
-  await fs6.writeFile(currentStatePath, next, "utf-8");
+  const next = value.trim();
+  if (next.length === 0) {
+    await fs6.writeFile(currentStatePath, "", "utf-8");
+    return true;
+  }
+  let existing = "";
+  try {
+    existing = (await fs6.readFile(currentStatePath, "utf-8")).trim();
+  } catch {
+  }
+  const dateLabel = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const content = existing ? `${existing}
+
+---
+
+**Updated \xB7 ${dateLabel}**
+
+${next}
+` : `${next}
+`;
+  await fs6.writeFile(currentStatePath, content, "utf-8");
   return true;
 }
 async function writeContext(value) {
@@ -17368,4 +17401,4 @@ export {
   WebhookService,
   WorkflowGuideService
 };
-//# sourceMappingURL=chunk-SOAUDPRS.js.map
+//# sourceMappingURL=chunk-N4FEI44O.js.map

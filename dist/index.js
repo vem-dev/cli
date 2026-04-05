@@ -23,7 +23,7 @@ import {
   isVemInitialized,
   listAllAgentSessions,
   parseVemUpdateBlock
-} from "./chunk-SOAUDPRS.js";
+} from "./chunk-N4FEI44O.js";
 import {
   readCopilotSessionDetail
 } from "./chunk-PO3WNPAJ.js";
@@ -1163,7 +1163,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
       await updateTaskMetaRemote(configService, activeTask, {
         raw_vem_update: JSON.parse(JSON.stringify(update)),
-        cli_version: "0.1.57",
+        cli_version: "0.1.58",
         ...changelogEntry ? { changelog_entry: changelogEntry } : {}
       });
     }
@@ -1220,7 +1220,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
       ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
       raw_vem_update: JSON.parse(JSON.stringify(update)),
-      cli_version: "0.1.57",
+      cli_version: "0.1.58",
       // Task memory fields — stored in task_memory_entries on the API side.
       ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
       changelog_entry: changelogReasoning ?? null
@@ -3403,7 +3403,7 @@ function registerMaintenanceCommands(program2) {
   });
   program2.command("diff").description("Show differences between local and cloud state").option("--detailed", "Show detailed content diffs").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DiffService } = await import("./dist-27CAVU4D.js");
+      const { DiffService } = await import("./dist-N2JGOLK3.js");
       const diffService = new DiffService();
       const result = await diffService.compareWithLastPush();
       if (options.json) {
@@ -3461,7 +3461,7 @@ ${"\u2500".repeat(50)}`));
   });
   program2.command("doctor").description("Run health checks on VEM setup").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DoctorService } = await import("./dist-27CAVU4D.js");
+      const { DoctorService } = await import("./dist-N2JGOLK3.js");
       const doctorService = new DoctorService();
       const results = await doctorService.runAllChecks();
       if (options.json) {
@@ -4673,6 +4673,20 @@ async function executeClaimedRunInSandbox(input) {
     } catch {
       baseHash = runGit(["rev-parse", baseBranch]);
     }
+    const localBranchExists = (() => {
+      try {
+        runGit(["rev-parse", "--verify", `refs/heads/${baseBranch}`]);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    if (!localBranchExists) {
+      try {
+        runGit(["branch", baseBranch, `${remote.name}/${baseBranch}`]);
+      } catch {
+      }
+    }
     if (existsSync(worktreePath)) {
       execFileSync("rm", ["-rf", worktreePath], { stdio: "ignore" });
     }
@@ -4866,6 +4880,7 @@ async function executeClaimedRunInSandbox(input) {
     const msg = err instanceof Error ? err.message : String(err);
     completionError = msg;
     completionStatus = "failed";
+    console.error(chalk13.red(`  \u2717 Sandbox run error: ${msg}`));
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
@@ -8921,6 +8936,138 @@ No agent sessions attached to ${id} yet.`)
       console.error(chalk18.red(`Failed to mark task ready: ${error.message}`));
     }
   });
+  taskCmd.command("iterate <id>").description(
+    "Start an iterative run on a task that already has a PR \u2014 continues from the existing PR branch"
+  ).option(
+    "-p, --prompt <text>",
+    "Follow-up instructions for the agent"
+  ).option(
+    "--run-id <runId>",
+    "UUID of the specific run to iterate from (defaults to the latest run with a PR)"
+  ).option(
+    "--agent <name>",
+    "Agent to use (copilot, claude, gemini, codex)",
+    "copilot"
+  ).option(
+    "--cloud",
+    "Dispatch as a cloud run (sandbox_job) \u2014 requires Ultra plan"
+  ).action(async (id, options) => {
+    await trackCommandUsage("task iterate");
+    try {
+      const configService = new ConfigService();
+      const apiKey = await tryAuthenticatedKey(configService);
+      if (!apiKey) {
+        console.error(
+          chalk18.red(
+            "\u2717 Not authenticated. Run `vem login` first."
+          )
+        );
+        process.exit(1);
+      }
+      if (!await configService.getProjectId()) {
+        console.error(
+          chalk18.red(
+            "\u2717 This directory is not linked to a VEM project. Run `vem link` first."
+          )
+        );
+        process.exit(1);
+      }
+      const tasks = await taskService.getTasks();
+      const task = tasks.find((t) => t.id === id || t.id === id.toUpperCase());
+      if (!task?.db_id) {
+        console.error(chalk18.red(`\u2717 Task ${id} not found or not synced.`));
+        process.exit(1);
+      }
+      const deviceHeaders = await buildDeviceHeaders(configService);
+      const headers = {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        ...deviceHeaders
+      };
+      const runsRes = await fetch(
+        `${API_URL}/tasks/${task.db_id}/runs`,
+        { headers }
+      );
+      if (!runsRes.ok) {
+        const data = await runsRes.json().catch(() => ({}));
+        console.error(
+          chalk18.red(
+            `\u2717 Failed to fetch runs: ${data.error ?? runsRes.statusText}`
+          )
+        );
+        process.exit(1);
+      }
+      const runsData = await runsRes.json();
+      let parentRunId = options.runId ?? null;
+      if (!parentRunId) {
+        const runWithPr = runsData.runs.find(
+          (r) => typeof r.pr_url === "string" && r.pr_url.trim().length > 0
+        );
+        if (!runWithPr) {
+          console.error(
+            chalk18.yellow(
+              `\u2717 No run with a PR found for task ${id}. Create an initial run first.`
+            )
+          );
+          process.exit(1);
+        }
+        parentRunId = runWithPr.id;
+        console.log(
+          chalk18.gray(
+            `  Using run ${runWithPr.id.slice(0, 8)} (PR: ${runWithPr.pr_url}) as base.`
+          )
+        );
+      }
+      const prompt = typeof options.prompt === "string" && options.prompt.trim() ? options.prompt.trim() : void 0;
+      if (!prompt) {
+        const response = await prompts9({
+          type: "text",
+          name: "value",
+          message: "Follow-up instructions for the agent (leave blank to skip):"
+        });
+        if (response.value?.trim()) {
+          options.prompt = response.value.trim();
+        }
+      }
+      const executionBackend = options.cloud ? "sandbox_job" : void 0;
+      const createRes = await fetch(
+        `${API_URL}/tasks/${task.db_id}/runs`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            parent_run_id: parentRunId,
+            user_prompt: options.prompt ?? void 0,
+            agent_name: options.agent,
+            execution_backend: executionBackend
+          })
+        }
+      );
+      if (!createRes.ok) {
+        const data = await createRes.json().catch(() => ({}));
+        console.error(
+          chalk18.red(
+            `\u2717 Failed to start iterative run: ${data.error ?? createRes.statusText}`
+          )
+        );
+        process.exit(1);
+      }
+      const result = await createRes.json();
+      console.log(
+        chalk18.green(
+          `
+\u2714 Iterative run queued (ID: ${result.run.id.slice(0, 8)}\u2026)
+`
+        )
+      );
+      console.log(chalk18.gray("  The agent will continue from the existing PR branch."));
+      console.log(chalk18.gray("  A new PR will be opened with cumulative changes."));
+    } catch (error) {
+      console.error(
+        chalk18.red(`Failed to start iterative run: ${error.message}`)
+      );
+    }
+  });
 }
 
 // src/runtime/monitoring.ts
@@ -8971,11 +9118,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.57",
+  release: "0.1.58",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.57").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.58").addHelpText(
   "after",
   `
 ${chalk19.bold("\n\u26A1 Power Workflows:")}

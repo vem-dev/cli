@@ -2745,4 +2745,169 @@ export function registerTaskCommands(program: Command) {
 				console.error(chalk.red(`Failed to mark task ready: ${error.message}`));
 			}
 		});
+
+	taskCmd
+		.command("iterate <id>")
+		.description(
+			"Start an iterative run on a task that already has a PR — continues from the existing PR branch",
+		)
+		.option(
+			"-p, --prompt <text>",
+			"Follow-up instructions for the agent",
+		)
+		.option(
+			"--run-id <runId>",
+			"UUID of the specific run to iterate from (defaults to the latest run with a PR)",
+		)
+		.option(
+			"--agent <name>",
+			"Agent to use (copilot, claude, gemini, codex)",
+			"copilot",
+		)
+		.option(
+			"--cloud",
+			"Dispatch as a cloud run (sandbox_job) — requires Ultra plan",
+		)
+		.action(async (id, options) => {
+			await trackCommandUsage("task iterate");
+			try {
+				const configService = new ConfigService();
+				const apiKey = await tryAuthenticatedKey(configService);
+				if (!apiKey) {
+					console.error(
+						chalk.red(
+							"✗ Not authenticated. Run `vem login` first.",
+						),
+					);
+					process.exit(1);
+				}
+
+				if (!(await configService.getProjectId())) {
+					console.error(
+						chalk.red(
+							"✗ This directory is not linked to a VEM project. Run `vem link` first.",
+						),
+					);
+					process.exit(1);
+				}
+
+				// Resolve task by external ID
+				const tasks = await taskService.getTasks();
+				const task = tasks.find((t) => t.id === id || t.id === id.toUpperCase());
+				if (!task?.db_id) {
+					console.error(chalk.red(`✗ Task ${id} not found or not synced.`));
+					process.exit(1);
+				}
+
+				const deviceHeaders = await buildDeviceHeaders(configService);
+				const headers: Record<string, string> = {
+					Authorization: `Bearer ${apiKey}`,
+					"Content-Type": "application/json",
+					...deviceHeaders,
+				};
+
+				// Fetch existing runs for this task
+				const runsRes = await fetch(
+					`${API_URL}/tasks/${task.db_id}/runs`,
+					{ headers },
+				);
+				if (!runsRes.ok) {
+					const data = await runsRes.json().catch(() => ({}));
+					console.error(
+						chalk.red(
+							`✗ Failed to fetch runs: ${(data as { error?: string }).error ?? runsRes.statusText}`,
+						),
+					);
+					process.exit(1);
+				}
+
+				const runsData = (await runsRes.json()) as {
+					runs: Array<{
+						id: string;
+						status: string;
+						branch_name?: string | null;
+						pr_url?: string | null;
+						pr_number?: number | null;
+					}>;
+				};
+
+				let parentRunId: string | null = options.runId ?? null;
+				if (!parentRunId) {
+					// Auto-select the most recent run that produced a PR
+					const runWithPr = runsData.runs.find(
+						(r) => typeof r.pr_url === "string" && r.pr_url.trim().length > 0,
+					);
+					if (!runWithPr) {
+						console.error(
+							chalk.yellow(
+								`✗ No run with a PR found for task ${id}. Create an initial run first.`,
+							),
+						);
+						process.exit(1);
+					}
+					parentRunId = runWithPr.id;
+					console.log(
+						chalk.gray(
+							`  Using run ${runWithPr.id.slice(0, 8)} (PR: ${runWithPr.pr_url}) as base.`,
+						),
+					);
+				}
+
+				const prompt =
+					typeof options.prompt === "string" && options.prompt.trim()
+						? options.prompt.trim()
+						: undefined;
+
+				if (!prompt) {
+					const response = await prompts({
+						type: "text",
+						name: "value",
+						message: "Follow-up instructions for the agent (leave blank to skip):",
+					});
+					if (response.value?.trim()) {
+						// biome-ignore lint: intentional reassign
+						(options as { prompt?: string }).prompt = response.value.trim();
+					}
+				}
+
+				const executionBackend = options.cloud ? "sandbox_job" : undefined;
+
+				const createRes = await fetch(
+					`${API_URL}/tasks/${task.db_id}/runs`,
+					{
+						method: "POST",
+						headers,
+						body: JSON.stringify({
+							parent_run_id: parentRunId,
+							user_prompt: (options as { prompt?: string }).prompt ?? undefined,
+							agent_name: options.agent,
+							execution_backend: executionBackend,
+						}),
+					},
+				);
+
+				if (!createRes.ok) {
+					const data = await createRes.json().catch(() => ({}));
+					console.error(
+						chalk.red(
+							`✗ Failed to start iterative run: ${(data as { error?: string }).error ?? createRes.statusText}`,
+						),
+					);
+					process.exit(1);
+				}
+
+				const result = (await createRes.json()) as { run: { id: string } };
+				console.log(
+					chalk.green(
+						`\n✔ Iterative run queued (ID: ${result.run.id.slice(0, 8)}…)\n`,
+					),
+				);
+				console.log(chalk.gray("  The agent will continue from the existing PR branch."));
+				console.log(chalk.gray("  A new PR will be opened with cumulative changes."));
+			} catch (error: any) {
+				console.error(
+					chalk.red(`Failed to start iterative run: ${error.message}`),
+				);
+			}
+		});
 }

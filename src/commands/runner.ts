@@ -821,6 +821,28 @@ async function executeClaimedRunInSandbox(input: {
 			baseHash = runGit(["rev-parse", baseBranch]);
 		}
 
+		// Ensure baseBranch exists as a local branch for the file:// clone.
+		// On iteration runs agent_base_branch is the prior run's pushed branch
+		// (e.g. vem/task-32-mnjfhyth), which only exists as a remote-tracking
+		// ref after git fetch — not a local branch. git clone --branch with
+		// file:// only advertises refs/heads/*, so we must materialise the
+		// local branch first or the clone will fail.
+		const localBranchExists = (() => {
+			try {
+				runGit(["rev-parse", "--verify", `refs/heads/${baseBranch}`]);
+				return true;
+			} catch {
+				return false;
+			}
+		})();
+		if (!localBranchExists) {
+			try {
+				runGit(["branch", baseBranch, `${remote.name}/${baseBranch}`]);
+			} catch {
+				// Remote ref not found either — let clone fail with a clear error.
+			}
+		}
+
 		// Clean up any stale sandbox dir at this path
 		if (existsSync(worktreePath)) {
 			execFileSync("rm", ["-rf", worktreePath], { stdio: "ignore" });
@@ -1063,6 +1085,7 @@ async function executeClaimedRunInSandbox(input: {
 		const msg = err instanceof Error ? err.message : String(err);
 		completionError = msg;
 		completionStatus = "failed";
+		console.error(chalk.red(`  ✗ Sandbox run error: ${msg}`));
 		if (heartbeatTimer) {
 			clearInterval(heartbeatTimer);
 			heartbeatTimer = null;
