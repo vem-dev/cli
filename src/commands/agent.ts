@@ -1605,6 +1605,8 @@ This file is generated for the active task. Update task context via:
 									`  (Auto-applying due to ${dynamicAutoExit ? "dynamic signal" : "--auto-exit"})`,
 								),
 							);
+							console.log(chalk.cyan("\n📄 Full vem_update content:"));
+							console.log(JSON.stringify(parsedAgentUpdate, null, 2));
 						}
 						try {
 							appliedUpdateResult = await applyVemUpdate(parsedAgentUpdate);
