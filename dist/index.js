@@ -11,6 +11,7 @@ import {
   SyncService,
   TaskService,
   UsageMetricsService,
+  VemReviewSchema,
   WorkflowGuideService,
   applyVemUpdate,
   computeSessionStats,
@@ -23,7 +24,7 @@ import {
   isVemInitialized,
   listAllAgentSessions,
   parseVemUpdateBlock
-} from "./chunk-N4FEI44O.js";
+} from "./chunk-F7AL3MQK.js";
 import {
   readCopilotSessionDetail
 } from "./chunk-PO3WNPAJ.js";
@@ -977,12 +978,15 @@ var fetchRemoteAgentTaskById = async (configService, _taskId, dbId) => {
   try {
     const apiKey = await resolveApiKey(configService);
     if (!apiKey) return null;
-    const response = await fetch(`${API_URL}/tasks/${encodeURIComponent(dbId)}`, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        ...await buildDeviceHeaders(configService)
+    const response = await fetch(
+      `${API_URL}/tasks/${encodeURIComponent(dbId)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          ...await buildDeviceHeaders(configService)
+        }
       }
-    });
+    );
     if (!response.ok) return null;
     const body = await response.json();
     if (!body.task) return null;
@@ -1163,7 +1167,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
       await updateTaskMetaRemote(configService, activeTask, {
         raw_vem_update: JSON.parse(JSON.stringify(update)),
-        cli_version: "0.1.58",
+        cli_version: "0.1.64",
         ...changelogEntry ? { changelog_entry: changelogEntry } : {}
       });
     }
@@ -1177,9 +1181,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
   if (tasksMissingDbId.length > 0) {
     const remoteTasks = await fetchRemoteAgentTasks(configService);
     if (remoteTasks) {
-      const remoteById = new Map(
-        remoteTasks.visible.map((t) => [t.id, t])
-      );
+      const remoteById = new Map(remoteTasks.visible.map((t) => [t.id, t]));
       for (const task of tasksMissingDbId) {
         const remote = remoteById.get(task.id);
         if (remote?.db_id) {
@@ -1189,7 +1191,9 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       }
     }
   }
-  const patchById = new Map((update.tasks ?? []).map((entry) => [entry.id, entry]));
+  const patchById = new Map(
+    (update.tasks ?? []).map((entry) => [entry.id, entry])
+  );
   for (const updatedTask of result.updatedTasks) {
     const patch = patchById.get(updatedTask.id);
     if (!patch) continue;
@@ -1220,7 +1224,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
       ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
       raw_vem_update: JSON.parse(JSON.stringify(update)),
-      cli_version: "0.1.58",
+      cli_version: "0.1.64",
       // Task memory fields — stored in task_memory_entries on the API side.
       ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
       changelog_entry: changelogReasoning ?? null
@@ -2488,48 +2492,354 @@ var APPETITE_LABELS = {
 var STATUS_LABEL = {
   planned: chalk9.gray("PLANNED"),
   active: chalk9.cyan("ACTIVE"),
-  closed: chalk9.green("CLOSED")
+  closed: chalk9.green("CLOSED"),
+  archived: chalk9.gray("ARCHIVED")
 };
+var STATUS_ORDER = {
+  "in-progress": 0,
+  "in-review": 1,
+  ready: 2,
+  todo: 3,
+  blocked: 4,
+  done: 5
+};
+var VALID_APPETITES = /* @__PURE__ */ new Set(["small", "medium", "large"]);
+var VALID_CYCLE_STATUSES = /* @__PURE__ */ new Set([
+  "planned",
+  "active",
+  "closed",
+  "archived"
+]);
+function asTrimmedString2(value) {
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+function asIso(value) {
+  if (typeof value !== "string") return void 0;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return void 0;
+  return parsed.toISOString();
+}
+function normalizeRemoteCycle(input) {
+  if (!input || typeof input !== "object") return null;
+  const record = input;
+  const id = asTrimmedString2(record.id);
+  const name = asTrimmedString2(record.name);
+  const goal = asTrimmedString2(record.goal);
+  const statusRaw = asTrimmedString2(record.status);
+  if (!id || !name || !goal || !statusRaw) return null;
+  if (!VALID_CYCLE_STATUSES.has(statusRaw)) return null;
+  const appetiteRaw = asTrimmedString2(record.appetite);
+  const appetite = appetiteRaw && VALID_APPETITES.has(appetiteRaw) ? appetiteRaw : void 0;
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  return {
+    id,
+    name,
+    goal,
+    appetite,
+    status: statusRaw,
+    start_at: asIso(record.start_at),
+    closed_at: asIso(record.closed_at),
+    created_at: asIso(record.created_at) ?? now,
+    updated_at: asIso(record.updated_at) ?? now
+  };
+}
+function normalizeRemoteTask(input) {
+  if (!input || typeof input !== "object") return null;
+  const record = input;
+  const id = asTrimmedString2(record.id);
+  const title = asTrimmedString2(record.title);
+  const status = asTrimmedString2(record.status);
+  if (!id || !title || !status) return null;
+  const impactRaw = record.impact_score;
+  return {
+    id,
+    title,
+    status,
+    priority: asTrimmedString2(record.priority),
+    impact_score: typeof impactRaw === "number" && Number.isFinite(impactRaw) ? impactRaw : void 0
+  };
+}
+function formatTaskStatus(status) {
+  switch (status) {
+    case "in-progress":
+      return chalk9.blue("IN PROG");
+    case "in-review":
+      return chalk9.magenta("IN REVW");
+    case "ready":
+      return chalk9.cyan("READY");
+    case "blocked":
+      return chalk9.yellow("BLOCKED");
+    case "done":
+      return chalk9.green("DONE");
+    default:
+      return chalk9.gray("TODO");
+  }
+}
+function getErrorMessage(error) {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+function renderCycleList(cycles) {
+  if (cycles.length === 0) {
+    console.log(
+      chalk9.gray("\n  No cycles yet. Create one with: vem cycle create\n")
+    );
+    return;
+  }
+  const table = new Table({
+    head: ["ID", "Status", "Name", "Goal", "Appetite", "Start"],
+    style: { head: ["cyan"] },
+    colWidths: [12, 10, 24, 40, 12, 14],
+    wordWrap: true
+  });
+  for (const cycle of cycles) {
+    table.push([
+      chalk9.white(cycle.id),
+      STATUS_LABEL[cycle.status] ?? chalk9.gray(cycle.status),
+      cycle.name,
+      chalk9.gray(
+        cycle.goal.length > 38 ? `${cycle.goal.slice(0, 38)}\u2026` : cycle.goal
+      ),
+      cycle.appetite ? chalk9.gray(APPETITE_LABELS[cycle.appetite] ?? cycle.appetite) : chalk9.gray("\u2014"),
+      cycle.start_at ? chalk9.white(
+        new Date(cycle.start_at).toLocaleDateString(void 0, {
+          month: "short",
+          day: "numeric"
+        })
+      ) : chalk9.gray("\u2014")
+    ]);
+  }
+  console.log(chalk9.bold("\n\u{1F504}  Cycles\n"));
+  console.log(table.toString());
+  console.log();
+}
+function renderCycleFocus(cycle, tasks) {
+  console.log(chalk9.bold(`
+\u{1F3AF}  ${cycle.id}: ${cycle.name}
+`));
+  console.log(
+    `  ${chalk9.gray("Status:")} ${STATUS_LABEL[cycle.status] ?? chalk9.gray(cycle.status)}`
+  );
+  console.log(`  ${chalk9.gray("Goal:")}   ${chalk9.white(cycle.goal)}`);
+  if (cycle.appetite) {
+    console.log(
+      `  ${chalk9.gray("Appetite:")} ${APPETITE_LABELS[cycle.appetite] ?? cycle.appetite}`
+    );
+  }
+  if (cycle.start_at) {
+    console.log(
+      `  ${chalk9.gray("Started:")} ${new Date(cycle.start_at).toLocaleDateString()}`
+    );
+  }
+  if (tasks.length === 0) {
+    console.log(
+      chalk9.gray(
+        `
+  No tasks assigned to this cycle yet.
+  Assign with: vem task update <id> --cycle ${cycle.id}
+`
+      )
+    );
+    return;
+  }
+  const sortedTasks = [...tasks].sort(
+    (a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)
+  );
+  const table = new Table({
+    head: ["ID", "Status", "Title", "Priority", "Score"],
+    style: { head: ["cyan"] },
+    colWidths: [12, 10, 44, 10, 8],
+    wordWrap: true
+  });
+  for (const task of sortedTasks) {
+    table.push([
+      chalk9.white(task.id),
+      formatTaskStatus(task.status),
+      task.title,
+      task.priority ? task.priority === "high" || task.priority === "critical" ? chalk9.red(task.priority) : chalk9.white(task.priority) : chalk9.gray("\u2014"),
+      task.impact_score !== void 0 ? chalk9.yellow(String(Math.round(task.impact_score))) : chalk9.gray("\u2014")
+    ]);
+  }
+  const done = sortedTasks.filter((task) => task.status === "done").length;
+  console.log(
+    `
+  ${chalk9.white(String(done))}/${chalk9.white(String(sortedTasks.length))} tasks done
+`
+  );
+  console.log(table.toString());
+  console.log();
+}
 function registerCycleCommands(program2) {
   const cycleCmd = program2.command("cycle").description("Manage goal cycles (Context-Flow)");
+  const resolveRemoteAuth = async () => {
+    const configService = new ConfigService();
+    const [apiKey, projectId] = await Promise.all([
+      tryAuthenticatedKey(configService),
+      configService.getProjectId()
+    ]);
+    if (!apiKey || !projectId) return null;
+    return { configService, apiKey, projectId };
+  };
+  const requestRemoteJson = async (auth, path4, init) => {
+    try {
+      const response = await fetch(`${API_URL}${path4}`, {
+        ...init,
+        headers: {
+          ...init?.headers || {},
+          Authorization: `Bearer ${auth.apiKey}`,
+          ...await buildDeviceHeaders(auth.configService)
+        }
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = body.error || response.statusText || "Request failed";
+        if (response.status === 401 || response.status === 403) {
+          return {
+            ok: false,
+            reason: "auth",
+            message,
+            status: response.status
+          };
+        }
+        if (response.status === 404 && message.toLowerCase().includes("project")) {
+          return {
+            ok: false,
+            reason: "project_missing",
+            message,
+            status: response.status
+          };
+        }
+        return {
+          ok: false,
+          reason: "http",
+          message,
+          status: response.status
+        };
+      }
+      return { ok: true, data: body };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "network",
+        message: error instanceof Error ? error.message : String(error)
+      };
+    }
+  };
+  const warnFallbackToLocal = (message) => {
+    console.log(
+      chalk9.yellow(
+        `\u26A0 Cloud cycle service unavailable, using local .vem/cycles fallback${message ? ` (${message})` : ""}.`
+      )
+    );
+  };
+  const showProjectMissingMessage = () => {
+    console.error(
+      chalk9.red(
+        "Linked project not found. Run `vem unlink` then `vem link` to reconnect."
+      )
+    );
+  };
+  const cacheRemoteCycles = async (cycles) => {
+    try {
+      await cycleService.replaceCycles(cycles);
+    } catch {
+    }
+  };
+  const cacheRemoteCycle = async (cycle) => {
+    try {
+      await cycleService.upsertCycle(cycle);
+    } catch {
+    }
+  };
+  const getRemoteCycles = async (auth) => {
+    const result = await requestRemoteJson(
+      auth,
+      `/projects/${auth.projectId}/cycles`
+    );
+    if (!result.ok) return result;
+    const cycles = Array.isArray(result.data.cycles) ? result.data.cycles.map((entry) => normalizeRemoteCycle(entry)).filter((entry) => Boolean(entry)) : [];
+    return { ok: true, data: cycles };
+  };
+  const getRemoteCycle = async (auth, id) => {
+    const result = await requestRemoteJson(
+      auth,
+      `/projects/${auth.projectId}/cycles/${encodeURIComponent(id)}`
+    );
+    if (!result.ok) return result;
+    const cycle = normalizeRemoteCycle(result.data.cycle);
+    if (!cycle) {
+      return { ok: false, reason: "http", message: "Malformed cycle response" };
+    }
+    return { ok: true, data: cycle };
+  };
+  const createRemoteCycle = async (auth, payload) => {
+    const result = await requestRemoteJson(
+      auth,
+      `/projects/${auth.projectId}/cycles`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }
+    );
+    if (!result.ok) return result;
+    const cycle = normalizeRemoteCycle(result.data.cycle);
+    if (!cycle) {
+      return { ok: false, reason: "http", message: "Malformed cycle response" };
+    }
+    return { ok: true, data: cycle };
+  };
+  const updateRemoteCycleStatus = async (auth, id, status) => {
+    const result = await requestRemoteJson(
+      auth,
+      `/projects/${auth.projectId}/cycles/${encodeURIComponent(id)}/status`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status })
+      }
+    );
+    if (!result.ok) return result;
+    const cycle = normalizeRemoteCycle(result.data.cycle);
+    if (!cycle) {
+      return { ok: false, reason: "http", message: "Malformed cycle response" };
+    }
+    return { ok: true, data: cycle };
+  };
+  const getRemoteCycleTasks = async (auth, id) => {
+    const result = await requestRemoteJson(
+      auth,
+      `/projects/${auth.projectId}/cycles/${encodeURIComponent(id)}/tasks`
+    );
+    if (!result.ok) return result;
+    const tasks = Array.isArray(result.data.tasks) ? result.data.tasks.map((entry) => normalizeRemoteTask(entry)).filter((entry) => Boolean(entry)) : [];
+    return { ok: true, data: tasks };
+  };
   cycleCmd.command("list").description("List all cycles").action(async () => {
     await trackCommandUsage("cycle list");
     try {
+      const remoteAuth = await resolveRemoteAuth();
+      if (remoteAuth) {
+        const remoteCycles = await getRemoteCycles(remoteAuth);
+        if (remoteCycles.ok) {
+          await cacheRemoteCycles(remoteCycles.data);
+          renderCycleList(remoteCycles.data);
+          return;
+        }
+        if (remoteCycles.reason === "project_missing") {
+          showProjectMissingMessage();
+        } else {
+          warnFallbackToLocal(remoteCycles.message);
+        }
+      }
       const cycles = await cycleService.getCycles();
-      if (cycles.length === 0) {
-        console.log(
-          chalk9.gray(
-            "\n  No cycles yet. Create one with: vem cycle create\n"
-          )
-        );
-        return;
-      }
-      const table = new Table({
-        head: ["ID", "Status", "Name", "Goal", "Appetite", "Start"],
-        style: { head: ["cyan"] },
-        colWidths: [12, 10, 24, 40, 12, 14],
-        wordWrap: true
-      });
-      for (const c of cycles) {
-        table.push([
-          chalk9.white(c.id),
-          STATUS_LABEL[c.status] ?? chalk9.gray(c.status),
-          c.name,
-          chalk9.gray(c.goal.length > 38 ? `${c.goal.slice(0, 38)}\u2026` : c.goal),
-          c.appetite ? chalk9.gray(APPETITE_LABELS[c.appetite] ?? c.appetite) : chalk9.gray("\u2014"),
-          c.start_at ? chalk9.white(
-            new Date(c.start_at).toLocaleDateString(void 0, {
-              month: "short",
-              day: "numeric"
-            })
-          ) : chalk9.gray("\u2014")
-        ]);
-      }
-      console.log(chalk9.bold("\n\u{1F504}  Cycles\n"));
-      console.log(table.toString());
-      console.log();
+      renderCycleList(cycles);
     } catch (error) {
-      console.error(chalk9.red(`Failed to list cycles: ${error.message}`));
+      console.error(
+        chalk9.red(`Failed to list cycles: ${getErrorMessage(error)}`)
+      );
     }
   });
   cycleCmd.command("create [name]").description("Create a new goal cycle").option(
@@ -2568,36 +2878,130 @@ function registerCycleCommands(program2) {
       const startAt = typeof options.startAt === "string" && options.startAt.trim() ? new Date(
         options.startAt.length === 10 ? `${options.startAt}T00:00:00.000Z` : options.startAt
       ).toISOString() : void 0;
-      const cycle = await cycleService.createCycle({
+      const remoteAuth = await resolveRemoteAuth();
+      if (remoteAuth) {
+        const remoteCreate = await createRemoteCycle(remoteAuth, {
+          name: cycleName,
+          goal: goalInput,
+          appetite: appetiteInput,
+          start_at: startAt
+        });
+        if (remoteCreate.ok) {
+          await cacheRemoteCycle(remoteCreate.data);
+          const cycle = remoteCreate.data;
+          console.log(chalk9.green(`
+\u2714 Cycle created: ${cycle.id}
+`));
+          console.log(`  ${chalk9.white(cycle.name)}`);
+          console.log(`  ${chalk9.gray("Goal:")} ${cycle.goal}`);
+          if (cycle.appetite) {
+            console.log(
+              `  ${chalk9.gray("Appetite:")} ${APPETITE_LABELS[cycle.appetite] ?? cycle.appetite}`
+            );
+          }
+          console.log(
+            chalk9.gray(
+              `
+  Tip: Start it with \`vem cycle start ${cycle.id}\` then assign tasks with \`vem task update <id> --cycle ${cycle.id}\`
+`
+            )
+          );
+          return;
+        }
+        if (remoteCreate.reason === "project_missing") {
+          showProjectMissingMessage();
+          process.exitCode = 1;
+          return;
+        }
+        warnFallbackToLocal(remoteCreate.message);
+      }
+      const localCycle = await cycleService.createCycle({
         name: cycleName,
         goal: goalInput,
         appetite: appetiteInput,
         start_at: startAt
       });
       console.log(chalk9.green(`
-\u2714 Cycle created: ${cycle.id}
+\u2714 Cycle created: ${localCycle.id}
 `));
-      console.log(`  ${chalk9.white(cycle.name)}`);
-      console.log(`  ${chalk9.gray("Goal:")} ${cycle.goal}`);
-      if (cycle.appetite) {
+      console.log(`  ${chalk9.white(localCycle.name)}`);
+      console.log(`  ${chalk9.gray("Goal:")} ${localCycle.goal}`);
+      if (localCycle.appetite) {
         console.log(
-          `  ${chalk9.gray("Appetite:")} ${APPETITE_LABELS[cycle.appetite] ?? cycle.appetite}`
+          `  ${chalk9.gray("Appetite:")} ${APPETITE_LABELS[localCycle.appetite] ?? localCycle.appetite}`
         );
       }
       console.log(
         chalk9.gray(
           `
-  Tip: Start it with \`vem cycle start ${cycle.id}\` then assign tasks with \`vem task update <id> --cycle ${cycle.id}\`
+  Tip: Start it with \`vem cycle start ${localCycle.id}\` then assign tasks with \`vem task update <id> --cycle ${localCycle.id}\`
 `
         )
       );
     } catch (error) {
-      console.error(chalk9.red(`Failed to create cycle: ${error.message}`));
+      console.error(
+        chalk9.red(`Failed to create cycle: ${getErrorMessage(error)}`)
+      );
     }
   });
   cycleCmd.command("start <id>").description("Mark a cycle as active").action(async (id) => {
     await trackCommandUsage("cycle start");
     try {
+      const remoteAuth = await resolveRemoteAuth();
+      if (remoteAuth) {
+        const cycleResult = await getRemoteCycle(remoteAuth, id);
+        if (cycleResult.ok) {
+          if (cycleResult.data.status === "active") {
+            console.log(chalk9.yellow(`
+  Cycle ${id} is already active.
+`));
+            return;
+          }
+          const remoteStart = await updateRemoteCycleStatus(
+            remoteAuth,
+            id,
+            "active"
+          );
+          if (remoteStart.ok) {
+            await cacheRemoteCycle(remoteStart.data);
+            const updated2 = remoteStart.data;
+            console.log(
+              chalk9.cyan(`
+\u2714 Cycle ${updated2.id} is now active
+`)
+            );
+            console.log(`  ${chalk9.white(updated2.name)}`);
+            console.log(`  ${chalk9.gray("Goal:")} ${updated2.goal}`);
+            console.log();
+            return;
+          }
+          if (remoteStart.reason === "project_missing") {
+            showProjectMissingMessage();
+            process.exitCode = 1;
+            return;
+          }
+          if (remoteStart.status === 409) {
+            console.error(chalk9.yellow(`
+\u26A0  ${remoteStart.message}
+`));
+            process.exitCode = 1;
+            return;
+          }
+          warnFallbackToLocal(remoteStart.message);
+        } else if (cycleResult.reason === "project_missing") {
+          showProjectMissingMessage();
+          process.exitCode = 1;
+          return;
+        } else if (cycleResult.status === 404) {
+          console.error(chalk9.red(`
+\u2716 Cycle ${id} not found.
+`));
+          process.exitCode = 1;
+          return;
+        } else {
+          warnFallbackToLocal(cycleResult.message);
+        }
+      }
       const cycle = await cycleService.getCycle(id);
       if (!cycle) {
         console.error(chalk9.red(`
@@ -2635,12 +3039,77 @@ function registerCycleCommands(program2) {
       console.log(`  ${chalk9.gray("Goal:")} ${updated.goal}`);
       console.log();
     } catch (error) {
-      console.error(chalk9.red(`Failed to start cycle: ${error.message}`));
+      console.error(
+        chalk9.red(`Failed to start cycle: ${getErrorMessage(error)}`)
+      );
     }
   });
   cycleCmd.command("close <id>").description("Close a cycle").action(async (id) => {
     await trackCommandUsage("cycle close");
     try {
+      const remoteAuth = await resolveRemoteAuth();
+      if (remoteAuth) {
+        const cycleResult = await getRemoteCycle(remoteAuth, id);
+        if (cycleResult.ok) {
+          if (cycleResult.data.status === "closed") {
+            console.log(chalk9.yellow(`
+  Cycle ${id} is already closed.
+`));
+            return;
+          }
+          const remoteClose = await updateRemoteCycleStatus(
+            remoteAuth,
+            id,
+            "closed"
+          );
+          if (remoteClose.ok) {
+            await cacheRemoteCycle(remoteClose.data);
+            const updated2 = remoteClose.data;
+            console.log(chalk9.green(`
+\u2714 Cycle ${updated2.id} closed
+`));
+            const remoteTasks = await getRemoteCycleTasks(remoteAuth, id);
+            if (remoteTasks.ok && remoteTasks.data.length > 0) {
+              const done = remoteTasks.data.filter(
+                (task) => task.status === "done"
+              ).length;
+              const total = remoteTasks.data.length;
+              console.log(
+                `  ${chalk9.gray("Tasks:")} ${chalk9.green(String(done))} done / ${chalk9.white(String(total))} total`
+              );
+            }
+            if (updated2.closed_at) {
+              console.log(
+                chalk9.gray(
+                  `  Closed: ${new Date(updated2.closed_at).toLocaleDateString()}
+`
+                )
+              );
+            } else {
+              console.log();
+            }
+            return;
+          }
+          if (remoteClose.reason === "project_missing") {
+            showProjectMissingMessage();
+            process.exitCode = 1;
+            return;
+          }
+          warnFallbackToLocal(remoteClose.message);
+        } else if (cycleResult.reason === "project_missing") {
+          showProjectMissingMessage();
+          process.exitCode = 1;
+          return;
+        } else if (cycleResult.status === 404) {
+          console.error(chalk9.red(`
+\u2716 Cycle ${id} not found.
+`));
+          process.exitCode = 1;
+          return;
+        } else {
+          warnFallbackToLocal(cycleResult.message);
+        }
+      }
       const cycle = await cycleService.getCycle(id);
       if (!cycle) {
         console.error(chalk9.red(`
@@ -2663,23 +3132,31 @@ function registerCycleCommands(program2) {
 `));
       const tasks = await taskService.getTasks();
       const cycleTasks = tasks.filter(
-        (t) => t.cycle_id === id && !t.deleted_at
+        (task) => task.cycle_id === id && !task.deleted_at
       );
       if (cycleTasks.length > 0) {
-        const done = cycleTasks.filter((t) => t.status === "done").length;
+        const done = cycleTasks.filter(
+          (task) => task.status === "done"
+        ).length;
         const total = cycleTasks.length;
         console.log(
           `  ${chalk9.gray("Tasks:")} ${chalk9.green(String(done))} done / ${chalk9.white(String(total))} total`
         );
       }
-      console.log(
-        chalk9.gray(
-          `  Closed: ${new Date(updated.closed_at).toLocaleDateString()}
+      if (updated.closed_at) {
+        console.log(
+          chalk9.gray(
+            `  Closed: ${new Date(updated.closed_at).toLocaleDateString()}
 `
-        )
-      );
+          )
+        );
+      } else {
+        console.log();
+      }
     } catch (error) {
-      console.error(chalk9.red(`Failed to close cycle: ${error.message}`));
+      console.error(
+        chalk9.red(`Failed to close cycle: ${getErrorMessage(error)}`)
+      );
     }
   });
   cycleCmd.command("focus [id]").description(
@@ -2687,6 +3164,53 @@ function registerCycleCommands(program2) {
   ).action(async (id) => {
     await trackCommandUsage("cycle focus");
     try {
+      const remoteAuth = await resolveRemoteAuth();
+      if (remoteAuth) {
+        let cycle2 = null;
+        if (id) {
+          const cycleResult = await getRemoteCycle(remoteAuth, id);
+          if (!cycleResult.ok) {
+            if (cycleResult.reason === "project_missing") {
+              showProjectMissingMessage();
+              process.exitCode = 1;
+              return;
+            }
+            if (cycleResult.status === 404) {
+              console.error(chalk9.red(`
+\u2716 Cycle ${id} not found.
+`));
+              process.exitCode = 1;
+              return;
+            }
+            warnFallbackToLocal(cycleResult.message);
+          } else {
+            cycle2 = cycleResult.data;
+          }
+        } else {
+          const cyclesResult = await getRemoteCycles(remoteAuth);
+          if (!cyclesResult.ok) {
+            if (cyclesResult.reason === "project_missing") {
+              showProjectMissingMessage();
+              process.exitCode = 1;
+              return;
+            }
+            warnFallbackToLocal(cyclesResult.message);
+          } else {
+            cycle2 = cyclesResult.data.find((entry) => entry.status === "active") ?? null;
+            await cacheRemoteCycles(cyclesResult.data);
+          }
+        }
+        if (cycle2) {
+          await cacheRemoteCycle(cycle2);
+          const tasksResult = await getRemoteCycleTasks(remoteAuth, cycle2.id);
+          if (!tasksResult.ok) {
+            warnFallbackToLocal(tasksResult.message);
+          } else {
+            renderCycleFocus(cycle2, tasksResult.data);
+            return;
+          }
+        }
+      }
       let cycle = null;
       if (id) {
         cycle = await cycleService.getCycle(id);
@@ -2708,92 +3232,18 @@ function registerCycleCommands(program2) {
           return;
         }
       }
-      console.log(chalk9.bold(`
-\u{1F3AF}  ${cycle.id}: ${cycle.name}
-`));
-      console.log(
-        `  ${chalk9.gray("Status:")} ${STATUS_LABEL[cycle.status] ?? chalk9.gray(cycle.status)}`
-      );
-      console.log(`  ${chalk9.gray("Goal:")}   ${chalk9.white(cycle.goal)}`);
-      if (cycle.appetite) {
-        console.log(
-          `  ${chalk9.gray("Appetite:")} ${APPETITE_LABELS[cycle.appetite] ?? cycle.appetite}`
-        );
-      }
-      if (cycle.start_at) {
-        console.log(
-          `  ${chalk9.gray("Started:")} ${new Date(cycle.start_at).toLocaleDateString()}`
-        );
-      }
       const tasks = await taskService.getTasks();
-      const cycleTasks = tasks.filter(
-        (t) => t.cycle_id === cycle.id && !t.deleted_at
-      );
-      if (cycleTasks.length === 0) {
-        console.log(
-          chalk9.gray(
-            `
-  No tasks assigned to this cycle yet.
-  Assign with: vem task update <id> --cycle ${cycle.id}
-`
-          )
-        );
-        return;
-      }
-      const statusOrder = {
-        "in-progress": 0,
-        "in-review": 1,
-        ready: 2,
-        todo: 3,
-        blocked: 4,
-        done: 5
-      };
-      cycleTasks.sort(
-        (a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
-      );
-      const table = new Table({
-        head: ["ID", "Status", "Title", "Priority", "Score"],
-        style: { head: ["cyan"] },
-        colWidths: [12, 10, 44, 10, 8],
-        wordWrap: true
-      });
-      const fmtStatus = (s) => {
-        switch (s) {
-          case "in-progress":
-            return chalk9.blue("IN PROG");
-          case "in-review":
-            return chalk9.magenta("IN REVW");
-          case "ready":
-            return chalk9.cyan("READY");
-          case "blocked":
-            return chalk9.yellow("BLOCKED");
-          case "done":
-            return chalk9.green("DONE");
-          default:
-            return chalk9.gray("TODO");
-        }
-      };
-      for (const t of cycleTasks) {
-        const score = t.impact_score;
-        table.push([
-          chalk9.white(t.id),
-          fmtStatus(t.status),
-          t.title,
-          t.priority ? t.priority === "high" || t.priority === "critical" ? chalk9.red(t.priority) : chalk9.white(t.priority) : chalk9.gray("\u2014"),
-          score !== void 0 ? chalk9.yellow(String(Math.round(score))) : chalk9.gray("\u2014")
-        ]);
-      }
-      const done = cycleTasks.filter((t) => t.status === "done").length;
-      console.log(
-        `
-  ${chalk9.white(String(done))}/${chalk9.white(String(cycleTasks.length))} tasks done
-`
-      );
-      console.log(table.toString());
-      console.log();
+      const cycleTasks = tasks.filter((task) => task.cycle_id === cycle?.id && !task.deleted_at).map((task) => ({
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        priority: task.priority,
+        impact_score: task.impact_score
+      }));
+      renderCycleFocus(cycle, cycleTasks);
     } catch (error) {
       console.error(
-        chalk9.red(`Failed to show cycle focus: ${error.message}`)
+        chalk9.red(`Failed to show cycle focus: ${getErrorMessage(error)}`)
       );
     }
   });
@@ -3403,7 +3853,7 @@ function registerMaintenanceCommands(program2) {
   });
   program2.command("diff").description("Show differences between local and cloud state").option("--detailed", "Show detailed content diffs").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DiffService } = await import("./dist-N2JGOLK3.js");
+      const { DiffService } = await import("./dist-NRMQJST3.js");
       const diffService = new DiffService();
       const result = await diffService.compareWithLastPush();
       if (options.json) {
@@ -3461,7 +3911,7 @@ ${"\u2500".repeat(50)}`));
   });
   program2.command("doctor").description("Run health checks on VEM setup").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DoctorService } = await import("./dist-N2JGOLK3.js");
+      const { DoctorService } = await import("./dist-NRMQJST3.js");
       const doctorService = new DoctorService();
       const results = await doctorService.runAllChecks();
       if (options.json) {
@@ -4069,7 +4519,8 @@ function registerProjectCommands(program2) {
 
 // src/commands/runner.ts
 import { execFileSync, spawn as spawn3 } from "child_process";
-import { existsSync } from "fs";
+import { randomUUID } from "crypto";
+import { existsSync, realpathSync } from "fs";
 import { dirname as dirname2, resolve as resolve2 } from "path";
 import chalk13 from "chalk";
 function sleep(ms) {
@@ -4203,9 +4654,13 @@ function checkDockerAvailable() {
     process.exit(1);
   }
 }
-var SANDBOX_IMAGE_NAME = "vem-sandbox:latest";
+var SANDBOX_IMAGE_NAME = "vem-sandbox:v2";
 function getSandboxImageDir() {
-  const cliDist = getCliEntrypoint();
+  let cliDist = getCliEntrypoint();
+  try {
+    cliDist = realpathSync(cliDist);
+  } catch {
+  }
   const distDir = dirname2(cliDist);
   const candidates = [
     resolve2(distDir, "Dockerfile.sandbox"),
@@ -4351,6 +4806,7 @@ function getCommitHashesSince(baseHash) {
   return output.split("\n").map((entry) => entry.trim()).filter(Boolean);
 }
 var _deviceHeadersCache = null;
+var _runnerIdentityHeaders = {};
 function getCachedDeviceHeaders(configService) {
   if (!_deviceHeadersCache) {
     _deviceHeadersCache = buildDeviceHeaders(configService);
@@ -4363,6 +4819,7 @@ async function apiRequest(configService, apiKey, path4, init) {
     Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
     ...await getCachedDeviceHeaders(configService),
+    ..._runnerIdentityHeaders,
     ...init?.headers ?? {}
   };
   return fetch(`${API_URL}${path4}`, {
@@ -4393,7 +4850,7 @@ async function sendRunnerHeartbeat(configService, apiKey, projectId, status, cur
     }
   );
 }
-async function completeTaskRunWithRetry(configService, apiKey, runId, payload, attempts = 5) {
+async function completeTaskRunWithRetry(configService, apiKey, runId, payload, attempts = 10) {
   let lastError = "unknown error";
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
@@ -4409,6 +4866,19 @@ async function completeTaskRunWithRetry(configService, apiKey, runId, payload, a
       if (response.ok) return;
       const bodyText = await response.text().catch(() => "");
       lastError = `HTTP ${response.status}${bodyText ? `: ${bodyText}` : ""}`;
+      if (response.status === 429) {
+        const retryAfter = Number(response.headers.get("Retry-After") ?? 0);
+        const waitMs = retryAfter > 0 ? retryAfter * 1e3 : 65e3;
+        if (attempt < attempts) {
+          console.warn(
+            chalk13.yellow(
+              `  Rate limit hit on /complete (attempt ${attempt}/${attempts}). Waiting ${Math.round(waitMs / 1e3)}s...`
+            )
+          );
+          await sleep(waitMs);
+          continue;
+        }
+      }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }
@@ -4454,18 +4924,17 @@ async function executeClaimedRun(input) {
     } catch {
       originalBranch = null;
     }
-    const preparedBranch = prepareTaskBranch(
-      run.task_external_id,
-      baseBranch,
-      remote.name
-    );
-    baseHash = preparedBranch.baseHash;
-    branchName = preparedBranch.branchName;
+    const preparedBranch = run.run_mode === "review" ? null : prepareTaskBranch(run.task_external_id, baseBranch, remote.name);
+    if (preparedBranch) {
+      baseHash = preparedBranch.baseHash;
+      branchName = preparedBranch.branchName;
+    }
     await appendRunLogs(configService, apiKey, run.id, [
       {
         sequence: sequence++,
         stream: "system",
-        chunk: `Prepared branch ${branchName} from ${preparedBranch.checkoutRef}
+        chunk: preparedBranch ? `Prepared branch ${branchName} from ${preparedBranch.checkoutRef}
+` : `Review mode \u2014 running on current branch (no new branch created)
 `
       }
     ]);
@@ -4482,7 +4951,8 @@ async function executeClaimedRun(input) {
       {
         env: {
           ...process.env,
-          VEM_RUNNER_INSTRUCTIONS: run.user_prompt?.trim() || ""
+          VEM_RUNNER_INSTRUCTIONS: run.user_prompt?.trim() || "",
+          VEM_RUN_MODE: run.run_mode || "implement"
         },
         cwd: repoRoot,
         // detached: true puts the child in its own process group so we can
@@ -4657,6 +5127,14 @@ async function executeClaimedRunInSandbox(input) {
   let cancellationRequested = false;
   let timedOut = false;
   let fullDockerLogLines = [];
+  const pendingLogEntries = [];
+  let logFlushTimer = null;
+  const flushPendingLogs = () => {
+    if (pendingLogEntries.length === 0) return;
+    const toFlush = pendingLogEntries.splice(0);
+    appendRunLogs(configService, apiKey, run.id, toFlush).catch(() => {
+    });
+  };
   const baseBranch = run.agent_base_branch || "main";
   const remote = await resolveGitRemote(configService);
   worktreePath = `/tmp/vem-run-${run.id}-${Date.now().toString(36)}`;
@@ -4726,7 +5204,9 @@ async function executeClaimedRunInSandbox(input) {
       "-e",
       `VEM_AGENT=${agent}`,
       "-e",
-      `VEM_TASK_ID=${run.task_external_id}`
+      `VEM_TASK_ID=${run.task_external_id}`,
+      "-e",
+      `VEM_RUN_MODE=${run.run_mode || "implement"}`
     );
     containerName = `vem-run-${run.id.slice(0, 8)}-${Date.now().toString(36)}`;
     const dockerArgs = [
@@ -4819,38 +5299,54 @@ async function executeClaimedRunInSandbox(input) {
     const streamLogs = (stream, data) => {
       const chunk = data.toString("utf-8");
       if (stream === "stdout") stdoutChunks.push(chunk);
-      appendRunLogs(configService, apiKey, run.id, [
-        { sequence: sequence++, stream, chunk }
-      ]).catch(() => {
-      });
+      pendingLogEntries.push({ sequence: sequence++, stream, chunk });
+      if (pendingLogEntries.length >= 20) {
+        if (logFlushTimer) {
+          clearTimeout(logFlushTimer);
+          logFlushTimer = null;
+        }
+        flushPendingLogs();
+      } else if (!logFlushTimer) {
+        logFlushTimer = setTimeout(() => {
+          logFlushTimer = null;
+          flushPendingLogs();
+        }, 2e3);
+      }
       process.stdout.write(chunk);
     };
     dockerProcess.stdout?.on("data", (d) => streamLogs("stdout", d));
     dockerProcess.stderr?.on("data", (d) => streamLogs("stderr", d));
     exitCode = await new Promise((resolve3) => {
-      dockerProcess.once("exit", (code) => resolve3(code ?? 1));
-      dockerProcess.once("error", () => resolve3(1));
+      dockerProcess?.once("exit", (code) => resolve3(code ?? 1));
+      dockerProcess?.once("error", () => resolve3(1));
     });
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+    if (logFlushTimer) {
+      clearTimeout(logFlushTimer);
+      logFlushTimer = null;
+    }
+    flushPendingLogs();
     if (exitCode === 0 && !cancellationRequested && !timedOut) {
       completionStatus = "completed";
-      try {
-        const output = runGitIn(worktreePath, [
-          "rev-list",
-          `${baseHash}..HEAD`
-        ]);
-        commitHashes = output.split("\n").map((h) => h.trim()).filter(Boolean);
-      } catch {
+      if (run.run_mode !== "review") {
+        try {
+          const output = runGitIn(worktreePath, [
+            "rev-list",
+            `${baseHash}..HEAD`
+          ]);
+          commitHashes = output.split("\n").map((h) => h.trim()).filter(Boolean);
+        } catch {
+        }
+        createPr = commitHashes.length > 0;
       }
-      createPr = commitHashes.length > 0;
     } else if (!cancellationRequested && !timedOut) {
       completionStatus = "failed";
     }
     fullDockerLogLines = stdoutChunks.join("").split("\n").filter(Boolean).slice(-1e3);
-    if (completionStatus === "completed" && commitHashes.length > 0) {
+    if (completionStatus === "completed" && commitHashes.length > 0 && run.run_mode !== "review") {
       try {
         runGitIn(worktreePath, ["push", "-u", "origin", branchName], {
           stdio: "inherit"
@@ -4885,6 +5381,11 @@ async function executeClaimedRunInSandbox(input) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+    if (logFlushTimer) {
+      clearTimeout(logFlushTimer);
+      logFlushTimer = null;
+    }
+    flushPendingLogs();
     await appendRunLogs(configService, apiKey, run.id, [
       {
         sequence: sequence++,
@@ -5102,9 +5603,17 @@ function registerRunnerCommands(program2) {
     const optionSource = typeof command.getOptionValueSource === "function" ? command.getOptionValueSource("agent") : void 0;
     const agentPinned = optionSource === "cli";
     const modeLabel = useSandbox ? "sandbox (Docker)" : "unsafe (direct)";
+    const deviceHeaders = await getCachedDeviceHeaders(configService);
+    const baseRunnerName = deviceHeaders["X-Vem-Device-Name"]?.trim() || "vem-runner";
+    const runnerInstanceId = randomUUID();
+    const runnerInstanceName = `${baseRunnerName} (${runnerInstanceId.slice(0, 8)})`;
+    _runnerIdentityHeaders = {
+      "X-Vem-Runner-Id": runnerInstanceId,
+      "X-Vem-Runner-Name": runnerInstanceName
+    };
     console.log(
       chalk13.cyan(
-        `Starting paired runner for project ${projectId} using agent "${agent}" [${modeLabel}]...`
+        `Starting paired runner for project ${projectId} using agent "${agent}" [${modeLabel}] (${runnerInstanceName})...`
       )
     );
     if (!useSandbox) {
@@ -5158,6 +5667,12 @@ function registerRunnerCommands(program2) {
           );
         }
         const payload = await claimResponse.json();
+        if (!payload.run && payload.active_run_id) {
+          process.stderr.write(
+            `[runner] device has an active run (${payload.active_run_id}). Waiting for it to complete or expire...
+`
+          );
+        }
         if (payload.run) {
           consecutiveErrors = 0;
           const runAgent = typeof payload.run.agent_name === "string" && payload.run.agent_name.trim().length > 0 ? payload.run.agent_name.trim() : agent;
@@ -6685,6 +7200,94 @@ Snapshot Contents:`));
       process.exitCode = 1;
     }
   });
+  const reviewCmd = program2.command("review").description("Manage cycle validation reviews");
+  reviewCmd.command("submit").description(
+    "Submit a vem_review block to the API from a cloud sandbox run"
+  ).option(
+    "-f, --file <path>",
+    "Path to a file containing the vem_review JSON block"
+  ).action(async (options) => {
+    await trackCommandUsage("review submit");
+    try {
+      let input = "";
+      if (options.file) {
+        input = await readFile6(options.file, "utf-8");
+      } else if (!process.stdin.isTTY) {
+        input = await readStdin();
+      } else {
+        console.error(
+          chalk17.red(
+            "Provide a vem_review JSON block via --file or pipe it into stdin."
+          )
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const JSON_FENCE = /```(?:vem_review|json)\s*([\s\S]*?)```/i;
+      const fenceMatch = JSON_FENCE.exec(input);
+      const rawJson = fenceMatch ? fenceMatch[1] : input;
+      let parsedJson;
+      try {
+        parsedJson = JSON.parse(rawJson.trim());
+      } catch {
+        console.error(
+          chalk17.red("\n\u2716 Review Submit Failed: input is not valid JSON\n")
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const result = VemReviewSchema.safeParse(parsedJson);
+      if (!result.success) {
+        console.error(
+          chalk17.red("\n\u2716 Review Submit Failed: invalid vem_review payload"),
+          result.error.flatten()
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const sandboxRunId = process.env.VEM_TASK_RUN_ID;
+      const sandboxApiKey = process.env.VEM_API_KEY;
+      const sandboxApiUrl = "https://api.vem.dev";
+      if (!sandboxRunId || !sandboxApiKey) {
+        console.error(
+          chalk17.red(
+            "\n\u2716 Review Submit Failed: VEM_TASK_RUN_ID and VEM_API_KEY must be set.\n  This command is intended for use inside a cloud sandbox container.\n"
+          )
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const res = await fetch(
+        `${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-review-structured`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${sandboxApiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ review: result.data })
+        }
+      );
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        console.error(
+          chalk17.red("[vem review submit] API submission failed:"),
+          res.status,
+          errText
+        );
+        process.exitCode = 1;
+      } else {
+        console.log(chalk17.green("\n\u2714 vem review submitted to API\n"));
+      }
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error(chalk17.red("\n\u2716 Review Submit Failed:"), error.message);
+      } else {
+        console.error(chalk17.red("\n\u2716 Review Submit Failed:"), String(error));
+      }
+      process.exitCode = 1;
+    }
+  });
   program2.command("queue").description("Manage offline snapshot queue").option("--list", "List queued snapshots", true).option("--retry", "Retry pushing all queued snapshots").option("--clear", "Clear the queue").action(async (options) => {
     try {
       const configService = new ConfigService();
@@ -6832,14 +7435,14 @@ function registerTaskCommands(program2) {
     "blocked",
     "done"
   ]);
-  const asTrimmedString2 = (value) => {
+  const asTrimmedString3 = (value) => {
     if (typeof value !== "string") return void 0;
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : void 0;
   };
   const asStringArray = (value) => {
     if (!Array.isArray(value)) return void 0;
-    const items = value.map((entry) => asTrimmedString2(entry)).filter((entry) => Boolean(entry));
+    const items = value.map((entry) => asTrimmedString3(entry)).filter((entry) => Boolean(entry));
     return items.length > 0 ? items : [];
   };
   const asFiniteNumber = (value) => {
@@ -6847,7 +7450,7 @@ function registerTaskCommands(program2) {
     return Number.isFinite(value) ? value : void 0;
   };
   const asIsoLikeString = (value) => {
-    const raw = asTrimmedString2(value);
+    const raw = asTrimmedString3(value);
     if (!raw) return void 0;
     const parsed = new Date(raw);
     return Number.isNaN(parsed.getTime()) ? void 0 : parsed.toISOString();
@@ -6861,11 +7464,11 @@ function registerTaskCommands(program2) {
     const actions = value.map((entry) => {
       if (!entry || typeof entry !== "object") return null;
       const record = entry;
-      const type = asTrimmedString2(record.type);
+      const type = asTrimmedString3(record.type);
       const createdAt = asIsoLikeString(record.created_at);
       if (!type || !createdAt) return null;
-      const reasoning = record.reasoning === null ? null : asTrimmedString2(record.reasoning);
-      const actor = record.actor === null ? null : asTrimmedString2(record.actor);
+      const reasoning = record.reasoning === null ? null : asTrimmedString3(record.reasoning);
+      const actor = record.actor === null ? null : asTrimmedString3(record.actor);
       return {
         type,
         reasoning,
@@ -6875,33 +7478,33 @@ function registerTaskCommands(program2) {
     }).filter(Boolean);
     return actions.length > 0 ? actions : [];
   };
-  const normalizeRemoteTask = (input) => {
+  const normalizeRemoteTask2 = (input) => {
     if (!input || typeof input !== "object") return null;
     const record = input;
-    const id = asTrimmedString2(record.id);
-    const title = asTrimmedString2(record.title);
+    const id = asTrimmedString3(record.id);
+    const title = asTrimmedString3(record.title);
     const status = asTaskStatus(record.status);
     if (!id || !title || !status) return null;
     return {
       id,
-      db_id: asTrimmedString2(record.db_id),
+      db_id: asTrimmedString3(record.db_id),
       title,
       status,
-      assignee: asTrimmedString2(record.assignee),
-      priority: asTrimmedString2(record.priority),
+      assignee: asTrimmedString3(record.assignee),
+      priority: asTrimmedString3(record.priority),
       tags: asStringArray(record.tags),
-      type: asTrimmedString2(record.type),
+      type: asTrimmedString3(record.type),
       estimate_hours: asFiniteNumber(record.estimate_hours),
       depends_on: asStringArray(record.depends_on),
       blocked_by: asStringArray(record.blocked_by),
-      recurrence_rule: asTrimmedString2(record.recurrence_rule),
-      owner_id: asTrimmedString2(record.owner_id),
-      reviewer_id: asTrimmedString2(record.reviewer_id),
-      parent_id: asTrimmedString2(record.parent_id),
+      recurrence_rule: asTrimmedString3(record.recurrence_rule),
+      owner_id: asTrimmedString3(record.owner_id),
+      reviewer_id: asTrimmedString3(record.reviewer_id),
+      parent_id: asTrimmedString3(record.parent_id),
       subtask_order: asFiniteNumber(record.subtask_order),
-      description: asTrimmedString2(record.description),
-      task_context: asTrimmedString2(record.task_context),
-      task_context_summary: asTrimmedString2(record.task_context_summary),
+      description: asTrimmedString3(record.description),
+      task_context: asTrimmedString3(record.task_context),
+      task_context_summary: asTrimmedString3(record.task_context_summary),
       related_decisions: asStringArray(record.related_decisions),
       evidence: asStringArray(record.evidence),
       actions: asTaskActions(record.actions),
@@ -6938,7 +7541,7 @@ function registerTaskCommands(program2) {
       if (!response.ok) return null;
       const body = await response.json();
       if (!Array.isArray(body.tasks)) return null;
-      return body.tasks.map((task) => normalizeRemoteTask(task)).filter((task) => Boolean(task));
+      return body.tasks.map((task) => normalizeRemoteTask2(task)).filter((task) => Boolean(task));
     } catch {
       return null;
     }
@@ -7119,7 +7722,7 @@ function registerTaskCommands(program2) {
       );
       if (!response.ok) return null;
       const body = await response.json();
-      const externalId = asTrimmedString2(body.task?.external_id);
+      const externalId = asTrimmedString3(body.task?.external_id);
       if (!externalId) return null;
       const hasExtendedMetadata = payload.tags !== void 0 || payload.depends_on !== void 0 || payload.blocked_by !== void 0 || payload.recurrence_rule !== void 0 || payload.owner_id !== void 0 || payload.reviewer_id !== void 0 || payload.due_at !== void 0 || payload.validation_steps !== void 0;
       if (hasExtendedMetadata) {
@@ -7308,7 +7911,7 @@ function registerTaskCommands(program2) {
       head: headCols,
       style: { head: ["cyan"] }
     });
-    const fmtMs = (ms) => {
+    const _fmtMs = (ms) => {
       if (!ms) return chalk18.gray("-");
       const days = Math.floor(ms / 864e5);
       const hrs = Math.floor(ms % 864e5 / 36e5);
@@ -7316,7 +7919,7 @@ function registerTaskCommands(program2) {
     };
     filtered.forEach((t) => {
       if (showFlow) {
-        const cycleTime = t.started_at && t.status === "done" ? Date.now() - new Date(t.started_at).getTime() : void 0;
+        const _cycleTime = t.started_at && t.status === "done" ? Date.now() - new Date(t.started_at).getTime() : void 0;
         table.push([
           chalk18.white(t.id),
           formatTaskStatusLabel(t.status, t.deleted_at),
@@ -8938,10 +9541,7 @@ No agent sessions attached to ${id} yet.`)
   });
   taskCmd.command("iterate <id>").description(
     "Start an iterative run on a task that already has a PR \u2014 continues from the existing PR branch"
-  ).option(
-    "-p, --prompt <text>",
-    "Follow-up instructions for the agent"
-  ).option(
+  ).option("-p, --prompt <text>", "Follow-up instructions for the agent").option(
     "--run-id <runId>",
     "UUID of the specific run to iterate from (defaults to the latest run with a PR)"
   ).option(
@@ -8958,9 +9558,7 @@ No agent sessions attached to ${id} yet.`)
       const apiKey = await tryAuthenticatedKey(configService);
       if (!apiKey) {
         console.error(
-          chalk18.red(
-            "\u2717 Not authenticated. Run `vem login` first."
-          )
+          chalk18.red("\u2717 Not authenticated. Run `vem login` first.")
         );
         process.exit(1);
       }
@@ -8973,7 +9571,9 @@ No agent sessions attached to ${id} yet.`)
         process.exit(1);
       }
       const tasks = await taskService.getTasks();
-      const task = tasks.find((t) => t.id === id || t.id === id.toUpperCase());
+      const task = tasks.find(
+        (t) => t.id === id || t.id === id.toUpperCase()
+      );
       if (!task?.db_id) {
         console.error(chalk18.red(`\u2717 Task ${id} not found or not synced.`));
         process.exit(1);
@@ -8984,10 +9584,9 @@ No agent sessions attached to ${id} yet.`)
         "Content-Type": "application/json",
         ...deviceHeaders
       };
-      const runsRes = await fetch(
-        `${API_URL}/tasks/${task.db_id}/runs`,
-        { headers }
-      );
+      const runsRes = await fetch(`${API_URL}/tasks/${task.db_id}/runs`, {
+        headers
+      });
       if (!runsRes.ok) {
         const data = await runsRes.json().catch(() => ({}));
         console.error(
@@ -9030,19 +9629,16 @@ No agent sessions attached to ${id} yet.`)
         }
       }
       const executionBackend = options.cloud ? "sandbox_job" : void 0;
-      const createRes = await fetch(
-        `${API_URL}/tasks/${task.db_id}/runs`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            parent_run_id: parentRunId,
-            user_prompt: options.prompt ?? void 0,
-            agent_name: options.agent,
-            execution_backend: executionBackend
-          })
-        }
-      );
+      const createRes = await fetch(`${API_URL}/tasks/${task.db_id}/runs`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          parent_run_id: parentRunId,
+          user_prompt: options.prompt ?? void 0,
+          agent_name: options.agent,
+          execution_backend: executionBackend
+        })
+      });
       if (!createRes.ok) {
         const data = await createRes.json().catch(() => ({}));
         console.error(
@@ -9060,8 +9656,12 @@ No agent sessions attached to ${id} yet.`)
 `
         )
       );
-      console.log(chalk18.gray("  The agent will continue from the existing PR branch."));
-      console.log(chalk18.gray("  A new PR will be opened with cumulative changes."));
+      console.log(
+        chalk18.gray("  The agent will continue from the existing PR branch.")
+      );
+      console.log(
+        chalk18.gray("  A new PR will be opened with cumulative changes.")
+      );
     } catch (error) {
       console.error(
         chalk18.red(`Failed to start iterative run: ${error.message}`)
@@ -9118,11 +9718,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.58",
+  release: "0.1.64",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.58").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.64").addHelpText(
   "after",
   `
 ${chalk19.bold("\n\u26A1 Power Workflows:")}

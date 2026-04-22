@@ -1,5 +1,4 @@
-[<img src="https://cdn.jsdelivr.net/npm/@vemdev/cli@latest/logo.png" alt="vem logo" width="32" />](https://vem.dev)
-[**v&nbsp;e&nbsp;m**](https://vem.dev)
+![vem logo](https://cdn.jsdelivr.net/npm/@vemdev/cli@latest/logo-512.png)
 
 # @vemdev/cli
 

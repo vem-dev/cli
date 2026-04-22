@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { ConfigService } from "@vem/core";
 import chalk from "chalk";
@@ -18,6 +19,7 @@ type ClaimedTaskRun = {
 	task_instructions?: string | null;
 	agent_base_branch?: string | null;
 	agent_name?: string | null;
+	run_mode?: string | null;
 };
 
 type ClaimedTerminalSession = {
@@ -195,11 +197,18 @@ function checkDockerAvailable(): void {
 	}
 }
 
-const SANDBOX_IMAGE_NAME = "vem-sandbox:latest";
+const SANDBOX_IMAGE_NAME = "vem-sandbox:v2";
 
 function getSandboxImageDir(): string {
-	// Dockerfile.sandbox lives in apps/cli/ — resolve relative to this dist file
-	const cliDist = getCliEntrypoint();
+	// Dockerfile.sandbox lives in apps/cli/ — resolve relative to this dist file.
+	// Use realpathSync to resolve symlinks (e.g. when vem is invoked via an nvm
+	// symlink, process.argv[1] points into nvm/bin rather than the monorepo).
+	let cliDist = getCliEntrypoint();
+	try {
+		cliDist = realpathSync(cliDist);
+	} catch {
+		// If realpath fails, fall through with the original path.
+	}
 	// dist/index.js → dist/ → apps/cli/
 	const distDir = dirname(cliDist);
 	const candidates = [
@@ -388,6 +397,7 @@ function getCommitHashesSince(baseHash: string) {
 // During heavy log streaming, hundreds of concurrent calls would
 // saturate the libuv threadpool and cause the process to hang.
 let _deviceHeadersCache: Promise<Record<string, string>> | null = null;
+let _runnerIdentityHeaders: Record<string, string> = {};
 function getCachedDeviceHeaders(
 	configService: ConfigService,
 ): Promise<Record<string, string>> {
@@ -409,6 +419,7 @@ async function apiRequest(
 		Authorization: `Bearer ${apiKey}`,
 		"Content-Type": "application/json",
 		...(await getCachedDeviceHeaders(configService)),
+		..._runnerIdentityHeaders,
 		...(init?.headers ?? {}),
 	};
 
@@ -464,7 +475,7 @@ async function completeTaskRunWithRetry(
 	apiKey: string,
 	runId: string,
 	payload: Record<string, unknown>,
-	attempts = 5,
+	attempts = 10,
 ) {
 	let lastError = "unknown error";
 	for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -481,6 +492,20 @@ async function completeTaskRunWithRetry(
 			if (response.ok) return;
 			const bodyText = await response.text().catch(() => "");
 			lastError = `HTTP ${response.status}${bodyText ? `: ${bodyText}` : ""}`;
+			// On rate limit, wait for the window to reset before retrying
+			if (response.status === 429) {
+				const retryAfter = Number(response.headers.get("Retry-After") ?? 0);
+				const waitMs = retryAfter > 0 ? retryAfter * 1000 : 65_000;
+				if (attempt < attempts) {
+					console.warn(
+						chalk.yellow(
+							`  Rate limit hit on /complete (attempt ${attempt}/${attempts}). Waiting ${Math.round(waitMs / 1000)}s...`,
+						),
+					);
+					await sleep(waitMs);
+					continue;
+				}
+			}
 		} catch (error: unknown) {
 			lastError = error instanceof Error ? error.message : String(error);
 		}
@@ -540,19 +565,22 @@ async function executeClaimedRun(input: {
 			originalBranch = null;
 		}
 
-		const preparedBranch = prepareTaskBranch(
-			run.task_external_id,
-			baseBranch,
-			remote.name,
-		);
-		baseHash = preparedBranch.baseHash;
-		branchName = preparedBranch.branchName;
+		const preparedBranch =
+			run.run_mode === "review"
+				? null
+				: prepareTaskBranch(run.task_external_id, baseBranch, remote.name);
+		if (preparedBranch) {
+			baseHash = preparedBranch.baseHash;
+			branchName = preparedBranch.branchName;
+		}
 
 		await appendRunLogs(configService, apiKey, run.id, [
 			{
 				sequence: sequence++,
 				stream: "system",
-				chunk: `Prepared branch ${branchName} from ${preparedBranch.checkoutRef}\n`,
+				chunk: preparedBranch
+					? `Prepared branch ${branchName} from ${preparedBranch.checkoutRef}\n`
+					: `Review mode — running on current branch (no new branch created)\n`,
 			},
 		]);
 
@@ -570,6 +598,7 @@ async function executeClaimedRun(input: {
 				env: {
 					...process.env,
 					VEM_RUNNER_INSTRUCTIONS: run.user_prompt?.trim() || "",
+					VEM_RUN_MODE: run.run_mode || "implement",
 				},
 				cwd: repoRoot,
 				// detached: true puts the child in its own process group so we can
@@ -792,6 +821,17 @@ async function executeClaimedRunInSandbox(input: {
 	let cancellationRequested = false;
 	let timedOut = false;
 	let fullDockerLogLines: string[] = [];
+	const pendingLogEntries: Array<{
+		sequence: number;
+		stream: "stdout" | "stderr";
+		chunk: string;
+	}> = [];
+	let logFlushTimer: NodeJS.Timeout | null = null;
+	const flushPendingLogs = () => {
+		if (pendingLogEntries.length === 0) return;
+		const toFlush = pendingLogEntries.splice(0);
+		appendRunLogs(configService, apiKey, run.id, toFlush).catch(() => {});
+	};
 
 	const baseBranch = run.agent_base_branch || "main";
 	const remote = await resolveGitRemote(configService);
@@ -894,6 +934,8 @@ async function executeClaimedRunInSandbox(input: {
 			`VEM_AGENT=${agent}`,
 			"-e",
 			`VEM_TASK_ID=${run.task_external_id}`,
+			"-e",
+			`VEM_RUN_MODE=${run.run_mode || "implement"}`,
 		);
 
 		containerName = `vem-run-${run.id.slice(0, 8)}-${Date.now().toString(36)}`;
@@ -1004,12 +1046,24 @@ async function executeClaimedRunInSandbox(input: {
 		}, 30_000);
 
 		const stdoutChunks: string[] = [];
+
 		const streamLogs = (stream: "stdout" | "stderr", data: Buffer) => {
 			const chunk = data.toString("utf-8");
 			if (stream === "stdout") stdoutChunks.push(chunk);
-			appendRunLogs(configService, apiKey, run.id, [
-				{ sequence: sequence++, stream, chunk },
-			]).catch(() => {});
+			pendingLogEntries.push({ sequence: sequence++, stream, chunk });
+			// Batch: flush when buffer fills up or after 2s of quiet
+			if (pendingLogEntries.length >= 20) {
+				if (logFlushTimer) {
+					clearTimeout(logFlushTimer);
+					logFlushTimer = null;
+				}
+				flushPendingLogs();
+			} else if (!logFlushTimer) {
+				logFlushTimer = setTimeout(() => {
+					logFlushTimer = null;
+					flushPendingLogs();
+				}, 2000);
+			}
 			process.stdout.write(chunk);
 		};
 
@@ -1017,8 +1071,8 @@ async function executeClaimedRunInSandbox(input: {
 		dockerProcess.stderr?.on("data", (d: Buffer) => streamLogs("stderr", d));
 
 		exitCode = await new Promise<number>((resolve) => {
-			dockerProcess!.once("exit", (code) => resolve(code ?? 1));
-			dockerProcess!.once("error", () => resolve(1));
+			dockerProcess?.once("exit", (code) => resolve(code ?? 1));
+			dockerProcess?.once("error", () => resolve(1));
 		});
 
 		if (heartbeatTimer) {
@@ -1026,22 +1080,32 @@ async function executeClaimedRunInSandbox(input: {
 			heartbeatTimer = null;
 		}
 
+		// Flush any remaining buffered log entries before processing results
+		if (logFlushTimer) {
+			clearTimeout(logFlushTimer);
+			logFlushTimer = null;
+		}
+		flushPendingLogs();
+
 		if (exitCode === 0 && !cancellationRequested && !timedOut) {
 			completionStatus = "completed";
-			// Collect commits made inside the container (in the sandbox clone)
-			try {
-				const output = runGitIn(worktreePath!, [
-					"rev-list",
-					`${baseHash}..HEAD`,
-				]);
-				commitHashes = output
-					.split("\n")
-					.map((h) => h.trim())
-					.filter(Boolean);
-			} catch {
-				/* no commits */
+			// In review mode the agent must not commit — skip commit/PR logic
+			if (run.run_mode !== "review") {
+				// Collect commits made inside the container (in the sandbox clone)
+				try {
+					const output = runGitIn(worktreePath!, [
+						"rev-list",
+						`${baseHash}..HEAD`,
+					]);
+					commitHashes = output
+						.split("\n")
+						.map((h) => h.trim())
+						.filter(Boolean);
+				} catch {
+					/* no commits */
+				}
+				createPr = commitHashes.length > 0;
 			}
-			createPr = commitHashes.length > 0;
 		} else if (!cancellationRequested && !timedOut) {
 			completionStatus = "failed";
 		}
@@ -1055,8 +1119,12 @@ async function executeClaimedRunInSandbox(input: {
 			.filter(Boolean)
 			.slice(-1000); // last 1000 lines covers any reasonable vem_update block
 
-		// Push branch from sandbox clone if we have commits
-		if (completionStatus === "completed" && commitHashes.length > 0) {
+		// Push branch from sandbox clone if we have commits (skip in review mode)
+		if (
+			completionStatus === "completed" &&
+			commitHashes.length > 0 &&
+			run.run_mode !== "review"
+		) {
 			try {
 				runGitIn(worktreePath!, ["push", "-u", "origin", branchName!], {
 					stdio: "inherit",
@@ -1090,6 +1158,11 @@ async function executeClaimedRunInSandbox(input: {
 			clearInterval(heartbeatTimer);
 			heartbeatTimer = null;
 		}
+		if (logFlushTimer) {
+			clearTimeout(logFlushTimer);
+			logFlushTimer = null;
+		}
+		flushPendingLogs();
 		await appendRunLogs(configService, apiKey, run.id, [
 			{
 				sequence: sequence++,
@@ -1359,9 +1432,18 @@ export function registerRunnerCommands(program: Command) {
 					: undefined;
 			const agentPinned = optionSource === "cli";
 			const modeLabel = useSandbox ? "sandbox (Docker)" : "unsafe (direct)";
+			const deviceHeaders = await getCachedDeviceHeaders(configService);
+			const baseRunnerName =
+				deviceHeaders["X-Vem-Device-Name"]?.trim() || "vem-runner";
+			const runnerInstanceId = randomUUID();
+			const runnerInstanceName = `${baseRunnerName} (${runnerInstanceId.slice(0, 8)})`;
+			_runnerIdentityHeaders = {
+				"X-Vem-Runner-Id": runnerInstanceId,
+				"X-Vem-Runner-Name": runnerInstanceName,
+			};
 			console.log(
 				chalk.cyan(
-					`Starting paired runner for project ${projectId} using agent "${agent}" [${modeLabel}]...`,
+					`Starting paired runner for project ${projectId} using agent "${agent}" [${modeLabel}] (${runnerInstanceName})...`,
 				),
 			);
 			if (!useSandbox) {
@@ -1423,7 +1505,13 @@ export function registerRunnerCommands(program: Command) {
 
 					const payload = (await claimResponse.json()) as {
 						run: ClaimedTaskRun | null;
+						active_run_id?: string;
 					};
+					if (!payload.run && payload.active_run_id) {
+						process.stderr.write(
+							`[runner] device has an active run (${payload.active_run_id}). Waiting for it to complete or expire...\n`,
+						);
+					}
 					if (payload.run) {
 						consecutiveErrors = 0;
 						const runAgent =

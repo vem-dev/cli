@@ -167,12 +167,15 @@ const fetchRemoteAgentTaskById = async (
 		const apiKey = await resolveApiKey(configService);
 		if (!apiKey) return null;
 
-		const response = await fetch(`${API_URL}/tasks/${encodeURIComponent(dbId)}`, {
-			headers: {
-				Authorization: `Bearer ${apiKey}`,
-				...(await buildDeviceHeaders(configService)),
+		const response = await fetch(
+			`${API_URL}/tasks/${encodeURIComponent(dbId)}`,
+			{
+				headers: {
+					Authorization: `Bearer ${apiKey}`,
+					...(await buildDeviceHeaders(configService)),
+				},
 			},
-		});
+		);
 		if (!response.ok) return null;
 
 		const body = (await response.json()) as { task?: unknown };
@@ -390,7 +393,7 @@ const updateTaskMetaRemote = async (
 	}
 };
 
-const updateTaskContextRemote = async (
+const _updateTaskContextRemote = async (
 	configService: ConfigService,
 	task: AgentTask,
 	payload: {
@@ -482,7 +485,8 @@ export const syncParsedTaskUpdatesToRemote = async (
 	// record the raw vem_update payload so it's queryable from task action history.
 	if (!hasTasks) {
 		const hasContent =
-			(typeof update.context === "string" && update.context.trim().length > 0) ||
+			(typeof update.context === "string" &&
+				update.context.trim().length > 0) ||
 			(Array.isArray(update.changelog_append) &&
 				update.changelog_append.length > 0) ||
 			(typeof update.changelog_append === "string" &&
@@ -515,9 +519,7 @@ export const syncParsedTaskUpdatesToRemote = async (
 	if (tasksMissingDbId.length > 0) {
 		const remoteTasks = await fetchRemoteAgentTasks(configService);
 		if (remoteTasks) {
-			const remoteById = new Map(
-				remoteTasks.visible.map((t) => [t.id, t]),
-			);
+			const remoteById = new Map(remoteTasks.visible.map((t) => [t.id, t]));
 			for (const task of tasksMissingDbId) {
 				const remote = remoteById.get(task.id);
 				if (remote?.db_id) {
@@ -529,7 +531,9 @@ export const syncParsedTaskUpdatesToRemote = async (
 		}
 	}
 
-	const patchById = new Map((update.tasks ?? []).map((entry) => [entry.id, entry]));
+	const patchById = new Map(
+		(update.tasks ?? []).map((entry) => [entry.id, entry]),
+	);
 	for (const updatedTask of result.updatedTasks) {
 		const patch = patchById.get(updatedTask.id);
 		if (!patch) continue;
@@ -1709,14 +1713,13 @@ This file is generated for the active task. Update task context via:
 				let localActiveTask = activeTask
 					? freshTasks.find((t) => t.id === activeTask.id)
 					: undefined;
-				const remoteActiveTask =
-					activeTask?.db_id
-						? await fetchRemoteAgentTaskById(
-								configService,
-								activeTask.id,
-								activeTask.db_id,
-							)
-						: null;
+				const remoteActiveTask = activeTask?.db_id
+					? await fetchRemoteAgentTaskById(
+							configService,
+							activeTask.id,
+							activeTask.db_id,
+						)
+					: null;
 				if (
 					localActiveTask &&
 					remoteActiveTask &&

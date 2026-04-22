@@ -775,7 +775,7 @@ export function registerTaskCommands(program: Command) {
 				style: { head: ["cyan"] },
 			});
 
-			const fmtMs = (ms?: number) => {
+			const _fmtMs = (ms?: number) => {
 				if (!ms) return chalk.gray("-");
 				const days = Math.floor(ms / 86400000);
 				const hrs = Math.floor((ms % 86400000) / 3600000);
@@ -786,7 +786,7 @@ export function registerTaskCommands(program: Command) {
 
 			filtered.forEach((t) => {
 				if (showFlow) {
-					const cycleTime =
+					const _cycleTime =
 						t.started_at && t.status === "done"
 							? Date.now() - new Date(t.started_at).getTime()
 							: undefined;
@@ -2751,10 +2751,7 @@ export function registerTaskCommands(program: Command) {
 		.description(
 			"Start an iterative run on a task that already has a PR — continues from the existing PR branch",
 		)
-		.option(
-			"-p, --prompt <text>",
-			"Follow-up instructions for the agent",
-		)
+		.option("-p, --prompt <text>", "Follow-up instructions for the agent")
 		.option(
 			"--run-id <runId>",
 			"UUID of the specific run to iterate from (defaults to the latest run with a PR)",
@@ -2775,9 +2772,7 @@ export function registerTaskCommands(program: Command) {
 				const apiKey = await tryAuthenticatedKey(configService);
 				if (!apiKey) {
 					console.error(
-						chalk.red(
-							"✗ Not authenticated. Run `vem login` first.",
-						),
+						chalk.red("✗ Not authenticated. Run `vem login` first."),
 					);
 					process.exit(1);
 				}
@@ -2793,7 +2788,9 @@ export function registerTaskCommands(program: Command) {
 
 				// Resolve task by external ID
 				const tasks = await taskService.getTasks();
-				const task = tasks.find((t) => t.id === id || t.id === id.toUpperCase());
+				const task = tasks.find(
+					(t) => t.id === id || t.id === id.toUpperCase(),
+				);
 				if (!task?.db_id) {
 					console.error(chalk.red(`✗ Task ${id} not found or not synced.`));
 					process.exit(1);
@@ -2807,10 +2804,9 @@ export function registerTaskCommands(program: Command) {
 				};
 
 				// Fetch existing runs for this task
-				const runsRes = await fetch(
-					`${API_URL}/tasks/${task.db_id}/runs`,
-					{ headers },
-				);
+				const runsRes = await fetch(`${API_URL}/tasks/${task.db_id}/runs`, {
+					headers,
+				});
 				if (!runsRes.ok) {
 					const data = await runsRes.json().catch(() => ({}));
 					console.error(
@@ -2862,7 +2858,8 @@ export function registerTaskCommands(program: Command) {
 					const response = await prompts({
 						type: "text",
 						name: "value",
-						message: "Follow-up instructions for the agent (leave blank to skip):",
+						message:
+							"Follow-up instructions for the agent (leave blank to skip):",
 					});
 					if (response.value?.trim()) {
 						// biome-ignore lint: intentional reassign
@@ -2872,19 +2869,16 @@ export function registerTaskCommands(program: Command) {
 
 				const executionBackend = options.cloud ? "sandbox_job" : undefined;
 
-				const createRes = await fetch(
-					`${API_URL}/tasks/${task.db_id}/runs`,
-					{
-						method: "POST",
-						headers,
-						body: JSON.stringify({
-							parent_run_id: parentRunId,
-							user_prompt: (options as { prompt?: string }).prompt ?? undefined,
-							agent_name: options.agent,
-							execution_backend: executionBackend,
-						}),
-					},
-				);
+				const createRes = await fetch(`${API_URL}/tasks/${task.db_id}/runs`, {
+					method: "POST",
+					headers,
+					body: JSON.stringify({
+						parent_run_id: parentRunId,
+						user_prompt: (options as { prompt?: string }).prompt ?? undefined,
+						agent_name: options.agent,
+						execution_backend: executionBackend,
+					}),
+				});
 
 				if (!createRes.ok) {
 					const data = await createRes.json().catch(() => ({}));
@@ -2902,8 +2896,12 @@ export function registerTaskCommands(program: Command) {
 						`\n✔ Iterative run queued (ID: ${result.run.id.slice(0, 8)}…)\n`,
 					),
 				);
-				console.log(chalk.gray("  The agent will continue from the existing PR branch."));
-				console.log(chalk.gray("  A new PR will be opened with cumulative changes."));
+				console.log(
+					chalk.gray("  The agent will continue from the existing PR branch."),
+				);
+				console.log(
+					chalk.gray("  A new PR will be opened with cumulative changes."),
+				);
 			} catch (error: any) {
 				console.error(
 					chalk.red(`Failed to start iterative run: ${error.message}`),

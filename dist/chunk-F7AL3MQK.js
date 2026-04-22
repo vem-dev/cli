@@ -2,59 +2,6 @@ import {
   __export
 } from "./chunk-PZ5AY32C.js";
 
-// ../../packages/core/dist/provider-key-encryption.js
-import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
-var ALGORITHM = "aes-256-gcm";
-var IV_BYTES = 12;
-var AUTH_TAG_BYTES = 16;
-function getEncryptionKey() {
-  const secret = process.env.PROVIDER_KEY_ENCRYPTION_SECRET;
-  if (!secret || secret.length !== 64) {
-    throw new Error(`PROVIDER_KEY_ENCRYPTION_SECRET must be a 64-character hex string (32 bytes). Generate one with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`);
-  }
-  return Buffer.from(secret, "hex");
-}
-function encryptProviderKey(plaintext) {
-  const key = getEncryptionKey();
-  const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv(ALGORITHM, key, iv);
-  const encrypted = Buffer.concat([
-    cipher.update(plaintext, "utf8"),
-    cipher.final()
-  ]);
-  const authTag = cipher.getAuthTag();
-  return [
-    iv.toString("hex"),
-    authTag.toString("hex"),
-    encrypted.toString("hex")
-  ].join(":");
-}
-function decryptProviderKey(encoded) {
-  const key = getEncryptionKey();
-  const parts = encoded.split(":");
-  if (parts.length !== 3) {
-    throw new Error("Invalid encrypted key format.");
-  }
-  const [ivHex, authTagHex, ciphertextHex] = parts;
-  const iv = Buffer.from(ivHex, "hex");
-  const authTag = Buffer.from(authTagHex, "hex");
-  const ciphertext = Buffer.from(ciphertextHex, "hex");
-  if (iv.length !== IV_BYTES || authTag.length !== AUTH_TAG_BYTES) {
-    throw new Error("Invalid encrypted key components.");
-  }
-  const decipher = createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(authTag);
-  return Buffer.concat([
-    decipher.update(ciphertext),
-    decipher.final()
-  ]).toString("utf8");
-}
-function maskProviderKey(plaintext) {
-  if (plaintext.length <= 10)
-    return "***";
-  return `${plaintext.slice(0, 10)}***`;
-}
-
 // ../../packages/core/dist/agent.js
 import path6 from "path";
 
@@ -13887,13 +13834,19 @@ var TaskTypeSchema = external_exports.enum([
   "enabler"
 ]);
 var CycleAppetiteSchema = external_exports.enum(["small", "medium", "large"]);
-var CycleStatusSchema = external_exports.enum(["planned", "active", "closed"]);
+var CycleStatusSchema = external_exports.enum([
+  "planned",
+  "active",
+  "closed",
+  "archived"
+]);
 var CycleSchema = external_exports.object({
   id: external_exports.string(),
   name: external_exports.string(),
   goal: external_exports.string(),
   appetite: CycleAppetiteSchema.optional(),
   status: CycleStatusSchema,
+  validation_instructions: external_exports.string().optional(),
   start_at: external_exports.string().datetime().optional(),
   closed_at: external_exports.string().datetime().optional(),
   created_at: external_exports.string().datetime(),
@@ -14036,6 +13989,79 @@ var VemUpdateSchema = external_exports.object({
   context: external_exports.string().optional(),
   new_cycles: external_exports.array(CycleCreateSchema).optional()
 });
+var VemReviewIssueSeveritySchema = external_exports.preprocess((val) => {
+  if (val === "high" || val === "critical")
+    return "error";
+  if (val === "medium")
+    return "warning";
+  if (val === "low")
+    return "info";
+  return val;
+}, external_exports.enum(["error", "warning", "info"]));
+var VemReviewIssueOverallStatusSchema = external_exports.enum([
+  "pass",
+  "fail",
+  "warning"
+]);
+var CycleReviewIssueStatusSchema = external_exports.enum([
+  "pending",
+  "resolved",
+  "dismissed"
+]);
+var CycleRunStatusSchema = external_exports.enum([
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "cancelled"
+]);
+var ValidationScheduleSchema = external_exports.enum(["manual", "daily", "weekly"]);
+var ValidationExecutionBackendSchema = external_exports.enum(["local", "cloud"]);
+var VemReviewIssueSchema = external_exports.object({
+  severity: VemReviewIssueSeveritySchema,
+  title: external_exports.string(),
+  description: external_exports.string().optional(),
+  file_path: external_exports.string().optional(),
+  line_number: external_exports.number().int().optional(),
+  suggestion: external_exports.string().optional()
+});
+var VemReviewSchema = external_exports.object({
+  cycle_run_id: external_exports.string().optional(),
+  task_id: external_exports.string().optional(),
+  issues: external_exports.array(VemReviewIssueSchema),
+  summary: external_exports.string().optional(),
+  overall_status: VemReviewIssueOverallStatusSchema.optional()
+});
+var CycleRunSchema = external_exports.object({
+  id: external_exports.string(),
+  cycle_id: external_exports.string(),
+  project_id: external_exports.string(),
+  org_id: external_exports.string(),
+  status: CycleRunStatusSchema,
+  validation_instructions: external_exports.string().optional().nullable(),
+  started_at: external_exports.string().datetime().optional().nullable(),
+  completed_at: external_exports.string().datetime().optional().nullable(),
+  created_at: external_exports.string().datetime(),
+  updated_at: external_exports.string().datetime()
+});
+var CycleReviewIssueSchema = external_exports.object({
+  id: external_exports.string(),
+  cycle_run_id: external_exports.string(),
+  task_id: external_exports.string().optional().nullable(),
+  task_run_id: external_exports.string().optional().nullable(),
+  task_external_id: external_exports.string().optional().nullable(),
+  vem_review: external_exports.unknown().optional().nullable(),
+  severity: VemReviewIssueSeveritySchema,
+  title: external_exports.string(),
+  description: external_exports.string().optional().nullable(),
+  file_path: external_exports.string().optional().nullable(),
+  line_number: external_exports.number().int().optional().nullable(),
+  suggestion: external_exports.string().optional().nullable(),
+  overall_status: VemReviewIssueOverallStatusSchema.optional().nullable(),
+  status: CycleReviewIssueStatusSchema,
+  created_at: external_exports.string().datetime(),
+  updated_at: external_exports.string().datetime()
+});
 var WebhookEventSchema = external_exports.enum([
   "task.created",
   "task.started",
@@ -14094,9 +14120,63 @@ var WebhookDeliverySchema = external_exports.object({
   error_message: external_exports.string().nullable(),
   delivered_at: external_exports.string().datetime()
 });
+var EnvironmentSchema = external_exports.object({
+  id: external_exports.string().uuid(),
+  project_id: external_exports.string().uuid(),
+  name: external_exports.string().min(1).max(64),
+  description: external_exports.string().nullable().optional(),
+  branch_name: external_exports.string().nullable().optional(),
+  current_commit_hash: external_exports.string().nullable().optional(),
+  created_at: external_exports.string().datetime(),
+  updated_at: external_exports.string().datetime()
+});
+var EnvironmentCreateSchema = external_exports.object({
+  name: external_exports.string().min(1, "Name is required").max(64),
+  description: external_exports.string().optional(),
+  branch_name: external_exports.string().optional()
+});
+var EnvironmentUpdateSchema = external_exports.object({
+  name: external_exports.string().min(1).max(64).optional(),
+  description: external_exports.string().nullable().optional(),
+  branch_name: external_exports.string().nullable().optional()
+});
+var DeploymentStatusSchema = external_exports.enum(["success", "failure", "pending"]);
+var DeploymentSourceSchema = external_exports.enum(["api", "branch_sync", "manual"]);
+var DeploymentEventSchema = external_exports.object({
+  id: external_exports.string().uuid(),
+  project_id: external_exports.string().uuid(),
+  environment_id: external_exports.string().uuid(),
+  task_id: external_exports.string().uuid().nullable().optional(),
+  commit_hash: external_exports.string().nullable().optional(),
+  status: DeploymentStatusSchema,
+  source: DeploymentSourceSchema,
+  triggered_by: external_exports.string().nullable().optional(),
+  deployed_at: external_exports.string().datetime(),
+  created_at: external_exports.string().datetime()
+});
+var RecordDeploymentSchema = external_exports.object({
+  commit_hash: external_exports.string().min(1).optional(),
+  task_id: external_exports.string().uuid().optional(),
+  status: DeploymentStatusSchema.optional().default("success")
+}).refine((d) => d.commit_hash || d.task_id, {
+  message: "Either commit_hash or task_id must be provided"
+});
+var TaskEnvironmentStatusSchema = external_exports.object({
+  environment_id: external_exports.string().uuid(),
+  environment_name: external_exports.string(),
+  branch_name: external_exports.string().nullable().optional(),
+  is_deployed: external_exports.boolean(),
+  /** Latest deployed_at for this environment, if available */
+  deployed_at: external_exports.string().datetime().nullable().optional(),
+  current_commit_hash: external_exports.string().nullable().optional()
+});
 
 // ../../packages/core/dist/agent.js
 import fs6 from "fs-extra";
+
+// ../../packages/core/dist/cycles.js
+import path2 from "path";
+import fs2 from "fs-extra";
 
 // ../../packages/core/dist/fs.js
 import path from "path";
@@ -14153,6 +14233,118 @@ async function ensureVemFiles() {
   }
 }
 
+// ../../packages/core/dist/cycles.js
+var CycleService = class {
+  async getCyclesDir() {
+    const vemDir = await getVemDir();
+    const dir = path2.join(vemDir, CYCLES_DIR);
+    await fs2.ensureDir(dir);
+    return dir;
+  }
+  cycleFilePath(dir, id) {
+    return path2.join(dir, `${id}.json`);
+  }
+  async getNextCycleId(dir) {
+    let maxNum = 0;
+    const entries = await fs2.readdir(dir).catch(() => []);
+    for (const entry of entries) {
+      const match = entry.match(/^CYCLE-(\d{3,})\.json$/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (!Number.isNaN(num) && num > maxNum) {
+          maxNum = num;
+        }
+      }
+    }
+    return `CYCLE-${String(maxNum + 1).padStart(3, "0")}`;
+  }
+  async createCycle(input) {
+    const dir = await this.getCyclesDir();
+    const id = await this.getNextCycleId(dir);
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+    const cycle = {
+      id,
+      name: input.name,
+      goal: input.goal,
+      appetite: input.appetite,
+      status: "planned",
+      start_at: input.start_at,
+      created_at: timestamp,
+      updated_at: timestamp
+    };
+    await fs2.writeJson(this.cycleFilePath(dir, id), cycle, { spaces: 2 });
+    return cycle;
+  }
+  async getCycles() {
+    const dir = await this.getCyclesDir();
+    const entries = await fs2.readdir(dir).catch(() => []);
+    const cycles = [];
+    for (const entry of entries) {
+      if (!entry.endsWith(".json"))
+        continue;
+      try {
+        const cycle = await fs2.readJson(path2.join(dir, entry));
+        if (cycle?.id)
+          cycles.push(cycle);
+      } catch {
+      }
+    }
+    return cycles.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }
+  async getCycle(id) {
+    const dir = await this.getCyclesDir();
+    const filePath = this.cycleFilePath(dir, id);
+    if (!await fs2.pathExists(filePath))
+      return null;
+    try {
+      return await fs2.readJson(filePath);
+    } catch {
+      return null;
+    }
+  }
+  async updateCycle(id, patch) {
+    const dir = await this.getCyclesDir();
+    const filePath = this.cycleFilePath(dir, id);
+    const current = await this.getCycle(id);
+    if (!current) {
+      throw new Error(`Cycle ${id} not found`);
+    }
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+    const updated = { ...current, ...patch, id, updated_at: timestamp };
+    if (patch.status === "active" && current.status !== "active") {
+      updated.start_at = updated.start_at ?? timestamp;
+    }
+    if (patch.status === "closed" && current.status !== "closed") {
+      updated.closed_at = updated.closed_at ?? timestamp;
+    }
+    await fs2.writeJson(filePath, updated, { spaces: 2 });
+    return updated;
+  }
+  async getActiveCycle() {
+    const cycles = await this.getCycles();
+    return cycles.find((c) => c.status === "active") ?? null;
+  }
+  async upsertCycle(cycle) {
+    const dir = await this.getCyclesDir();
+    await fs2.writeJson(this.cycleFilePath(dir, cycle.id), cycle, { spaces: 2 });
+    return cycle;
+  }
+  async replaceCycles(cycles) {
+    const dir = await this.getCyclesDir();
+    const entries = await fs2.readdir(dir).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.endsWith(".json"))
+        continue;
+      await fs2.remove(path2.join(dir, entry));
+    }
+    for (const cycle of cycles) {
+      await fs2.writeJson(this.cycleFilePath(dir, cycle.id), cycle, {
+        spaces: 2
+      });
+    }
+  }
+};
+
 // ../../packages/core/dist/git.js
 import { execSync } from "child_process";
 async function getGitHeadHash() {
@@ -14182,8 +14374,8 @@ async function getGitLastCommitForPath(filePath) {
 }
 
 // ../../packages/core/dist/logs.js
-import path2 from "path";
-import fs2 from "fs-extra";
+import path3 from "path";
+import fs3 from "fs-extra";
 var ScalableLogService = class {
   subDir;
   constructor(subDir) {
@@ -14191,15 +14383,15 @@ var ScalableLogService = class {
   }
   async getBaseDir() {
     const vemDir = await getVemDir();
-    const dir = path2.join(vemDir, this.subDir);
-    await fs2.ensureDir(dir);
+    const dir = path3.join(vemDir, this.subDir);
+    await fs3.ensureDir(dir);
     return dir;
   }
   async addEntry(title, content, options) {
     const baseDir = await this.getBaseDir();
     const timestamp = (/* @__PURE__ */ new Date()).toISOString();
     const id = `${timestamp.replace(/[:.]/g, "-")}-${title.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
-    const filePath = path2.join(baseDir, `${id}.md`);
+    const filePath = path3.join(baseDir, `${id}.md`);
     const commitLine = options?.commitHash ? `**Commit:** ${options.commitHash}
 
 ` : "";
@@ -14209,17 +14401,17 @@ var ScalableLogService = class {
 
 ${commitLine}${content}
 `;
-    await fs2.writeFile(filePath, fullContent, "utf-8");
+    await fs3.writeFile(filePath, fullContent, "utf-8");
     return id;
   }
   async getAllEntries() {
     const baseDir = await this.getBaseDir();
-    const files = await fs2.readdir(baseDir);
+    const files = await fs3.readdir(baseDir);
     const entries = [];
     for (const file2 of files) {
       if (file2.endsWith(".md")) {
-        const content = await fs2.readFile(path2.join(baseDir, file2), "utf-8");
-        const id = path2.parse(file2).name;
+        const content = await fs3.readFile(path3.join(baseDir, file2), "utf-8");
+        const id = path3.parse(file2).name;
         const titleMatch = content.match(/^#\s+(.*)/);
         const title = titleMatch ? titleMatch[1] : id;
         entries.push({
@@ -14227,7 +14419,7 @@ ${commitLine}${content}
           title,
           content,
           created_at: id.substring(0, 19).replace(/-/g, (_m, offset) => offset === 10 ? "T" : offset === 13 || offset === 16 ? ":" : "-"),
-          file_path: path2.join(baseDir, file2)
+          file_path: path3.join(baseDir, file2)
         });
       }
     }
@@ -14275,115 +14467,20 @@ ${entry.content}`;
     if (toArchive.length === 0)
       return 0;
     const baseDir = await this.getBaseDir();
-    const archiveBase = path2.join(baseDir, "archive");
-    await fs2.ensureDir(archiveBase);
+    const archiveBase = path3.join(baseDir, "archive");
+    await fs3.ensureDir(archiveBase);
     for (const entry of toArchive) {
       const date5 = new Date(entry.created_at);
       const folder = `${date5.getFullYear()}-${String(date5.getMonth() + 1).padStart(2, "0")}`;
-      const targetDir = path2.join(archiveBase, folder);
-      await fs2.ensureDir(targetDir);
-      const src = path2.join(baseDir, `${entry.id}.md`);
-      const dest = path2.join(targetDir, `${entry.id}.md`);
-      if (await fs2.pathExists(src)) {
-        await fs2.move(src, dest, { overwrite: true });
+      const targetDir = path3.join(archiveBase, folder);
+      await fs3.ensureDir(targetDir);
+      const src = path3.join(baseDir, `${entry.id}.md`);
+      const dest = path3.join(targetDir, `${entry.id}.md`);
+      if (await fs3.pathExists(src)) {
+        await fs3.move(src, dest, { overwrite: true });
       }
     }
     return toArchive.length;
-  }
-};
-
-// ../../packages/core/dist/cycles.js
-import path3 from "path";
-import fs3 from "fs-extra";
-var CycleService = class {
-  async getCyclesDir() {
-    const vemDir = await getVemDir();
-    const dir = path3.join(vemDir, CYCLES_DIR);
-    await fs3.ensureDir(dir);
-    return dir;
-  }
-  cycleFilePath(dir, id) {
-    return path3.join(dir, `${id}.json`);
-  }
-  async getNextCycleId(dir) {
-    let maxNum = 0;
-    const entries = await fs3.readdir(dir).catch(() => []);
-    for (const entry of entries) {
-      const match = entry.match(/^CYCLE-(\d{3,})\.json$/);
-      if (match) {
-        const num = parseInt(match[1], 10);
-        if (!Number.isNaN(num) && num > maxNum) {
-          maxNum = num;
-        }
-      }
-    }
-    return `CYCLE-${String(maxNum + 1).padStart(3, "0")}`;
-  }
-  async createCycle(input) {
-    const dir = await this.getCyclesDir();
-    const id = await this.getNextCycleId(dir);
-    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
-    const cycle = {
-      id,
-      name: input.name,
-      goal: input.goal,
-      appetite: input.appetite,
-      status: "planned",
-      start_at: input.start_at,
-      created_at: timestamp,
-      updated_at: timestamp
-    };
-    await fs3.writeJson(this.cycleFilePath(dir, id), cycle, { spaces: 2 });
-    return cycle;
-  }
-  async getCycles() {
-    const dir = await this.getCyclesDir();
-    const entries = await fs3.readdir(dir).catch(() => []);
-    const cycles = [];
-    for (const entry of entries) {
-      if (!entry.endsWith(".json"))
-        continue;
-      try {
-        const cycle = await fs3.readJson(path3.join(dir, entry));
-        if (cycle?.id)
-          cycles.push(cycle);
-      } catch {
-      }
-    }
-    return cycles.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  }
-  async getCycle(id) {
-    const dir = await this.getCyclesDir();
-    const filePath = this.cycleFilePath(dir, id);
-    if (!await fs3.pathExists(filePath))
-      return null;
-    try {
-      return await fs3.readJson(filePath);
-    } catch {
-      return null;
-    }
-  }
-  async updateCycle(id, patch) {
-    const dir = await this.getCyclesDir();
-    const filePath = this.cycleFilePath(dir, id);
-    const current = await this.getCycle(id);
-    if (!current) {
-      throw new Error(`Cycle ${id} not found`);
-    }
-    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
-    const updated = { ...current, ...patch, id, updated_at: timestamp };
-    if (patch.status === "active" && current.status !== "active") {
-      updated.start_at = updated.start_at ?? timestamp;
-    }
-    if (patch.status === "closed" && current.status !== "closed") {
-      updated.closed_at = updated.closed_at ?? timestamp;
-    }
-    await fs3.writeJson(filePath, updated, { spaces: 2 });
-    return updated;
-  }
-  async getActiveCycle() {
-    const cycles = await this.getCycles();
-    return cycles.find((c) => c.status === "active") ?? null;
   }
 };
 
@@ -15026,12 +15123,12 @@ ${newCtx}`;
     const time_in_status = {};
     if (createdAtMs !== void 0) {
       if (readyAtMs !== void 0) {
-        time_in_status["todo"] = readyAtMs - createdAtMs;
+        time_in_status.todo = readyAtMs - createdAtMs;
         if (startedAtMs !== void 0) {
-          time_in_status["ready"] = startedAtMs - readyAtMs;
+          time_in_status.ready = startedAtMs - readyAtMs;
         }
       } else if (startedAtMs !== void 0) {
-        time_in_status["todo"] = startedAtMs - createdAtMs;
+        time_in_status.todo = startedAtMs - createdAtMs;
       }
     }
     if (startedAtMs !== void 0) {
@@ -15687,7 +15784,7 @@ var DoctorService = class {
       return {
         name: "API Key",
         status: "fail",
-        message: `Error checking API key: ${error48.message}`,
+        message: `Error checking API key: ${error48 instanceof Error ? error48.message : String(error48)}`,
         autoFixable: false
       };
     }
@@ -15712,7 +15809,7 @@ var DoctorService = class {
       return {
         name: "Device ID",
         status: "fail",
-        message: `Error checking device ID: ${error48.message}`,
+        message: `Error checking device ID: ${error48 instanceof Error ? error48.message : String(error48)}`,
         autoFixable: false
       };
     }
@@ -15738,7 +15835,7 @@ var DoctorService = class {
       return {
         name: "Project Link",
         status: "fail",
-        message: `Error checking project link: ${error48.message}`,
+        message: `Error checking project link: ${error48 instanceof Error ? error48.message : String(error48)}`,
         autoFixable: false
       };
     }
@@ -15780,7 +15877,7 @@ var DoctorService = class {
       return {
         name: ".vem Directory",
         status: "fail",
-        message: `Error checking .vem directory: ${error48.message}`,
+        message: `Error checking .vem directory: ${error48 instanceof Error ? error48.message : String(error48)}`,
         autoFixable: false
       };
     }
@@ -15810,7 +15907,7 @@ var DoctorService = class {
       return {
         name: "Required Files",
         status: "fail",
-        message: `Error checking required files: ${error48.message}`,
+        message: `Error checking required files: ${error48 instanceof Error ? error48.message : String(error48)}`,
         autoFixable: false
       };
     }
@@ -15879,7 +15976,7 @@ var DoctorService = class {
       return {
         name: "Task Integrity",
         status: "fail",
-        message: `Error checking task integrity: ${error48.message}`,
+        message: `Error checking task integrity: ${error48 instanceof Error ? error48.message : String(error48)}`,
         autoFixable: false
       };
     }
@@ -15904,7 +16001,8 @@ var ENTITLEMENTS = {
     maxDevices: 2,
     monthlyAiCredits: 500,
     allowModelSelection: false,
-    cloudAgentRuns: false
+    cloudAgentRuns: false,
+    maxConcurrentCloudRuns: 0
   },
   pro: {
     tier: "pro",
@@ -15920,7 +16018,8 @@ var ENTITLEMENTS = {
     maxDevices: 5,
     monthlyAiCredits: 5e3,
     allowModelSelection: false,
-    cloudAgentRuns: false
+    cloudAgentRuns: true,
+    maxConcurrentCloudRuns: 1
   },
   ultra: {
     tier: "ultra",
@@ -15936,7 +16035,8 @@ var ENTITLEMENTS = {
     maxDevices: null,
     monthlyAiCredits: 25e3,
     allowModelSelection: true,
-    cloudAgentRuns: true
+    cloudAgentRuns: true,
+    maxConcurrentCloudRuns: 3
   }
 };
 function normalizeTier(value) {
@@ -16084,7 +16184,7 @@ function normalizeGithubPrivateKey(rawValue) {
   try {
     createPrivateKey(normalized);
   } catch (error48) {
-    throw new Error(`Invalid GH_PRIVATE_KEY content. Parsed as PEM but Node/OpenSSL rejected it: ${String(error48?.message ?? error48)}`);
+    throw new Error(`Invalid GH_PRIVATE_KEY content. Parsed as PEM but Node/OpenSSL rejected it: ${error48 instanceof Error ? error48.message : String(error48)}`);
   }
   return normalized;
 }
@@ -16126,6 +16226,59 @@ var logger = pino({
     remove: true
   }
 });
+
+// ../../packages/core/dist/provider-key-encryption.js
+import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
+var ALGORITHM = "aes-256-gcm";
+var IV_BYTES = 12;
+var AUTH_TAG_BYTES = 16;
+function getEncryptionKey() {
+  const secret = process.env.PROVIDER_KEY_ENCRYPTION_SECRET;
+  if (!secret || secret.length !== 64) {
+    throw new Error(`PROVIDER_KEY_ENCRYPTION_SECRET must be a 64-character hex string (32 bytes). Generate one with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`);
+  }
+  return Buffer.from(secret, "hex");
+}
+function encryptProviderKey(plaintext) {
+  const key = getEncryptionKey();
+  const iv = randomBytes(IV_BYTES);
+  const cipher = createCipheriv(ALGORITHM, key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(plaintext, "utf8"),
+    cipher.final()
+  ]);
+  const authTag = cipher.getAuthTag();
+  return [
+    iv.toString("hex"),
+    authTag.toString("hex"),
+    encrypted.toString("hex")
+  ].join(":");
+}
+function decryptProviderKey(encoded) {
+  const key = getEncryptionKey();
+  const parts = encoded.split(":");
+  if (parts.length !== 3) {
+    throw new Error("Invalid encrypted key format.");
+  }
+  const [ivHex, authTagHex, ciphertextHex] = parts;
+  const iv = Buffer.from(ivHex, "hex");
+  const authTag = Buffer.from(authTagHex, "hex");
+  const ciphertext = Buffer.from(ciphertextHex, "hex");
+  if (iv.length !== IV_BYTES || authTag.length !== AUTH_TAG_BYTES) {
+    throw new Error("Invalid encrypted key components.");
+  }
+  const decipher = createDecipheriv(ALGORITHM, key, iv);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([
+    decipher.update(ciphertext),
+    decipher.final()
+  ]).toString("utf8");
+}
+function maskProviderKey(plaintext) {
+  if (plaintext.length <= 10)
+    return "***";
+  return `${plaintext.slice(0, 10)}***`;
+}
 
 // ../../packages/core/dist/secrets.js
 import { createHash as createHash2, timingSafeEqual } from "crypto";
@@ -17341,9 +17494,7 @@ var WorkflowGuideService = class {
 };
 
 export {
-  encryptProviderKey,
-  decryptProviderKey,
-  maskProviderKey,
+  VemReviewSchema,
   VEM_DIR,
   TASKS_DIR,
   CYCLES_DIR,
@@ -17361,10 +17512,10 @@ export {
   ensureVemDir,
   isVemInitialized,
   ensureVemFiles,
+  CycleService,
   getGitHeadHash,
   getGitLastCommitForPath,
   ScalableLogService,
-  CycleService,
   TaskService,
   formatVemPack,
   parseVemUpdateBlock,
@@ -17388,6 +17539,9 @@ export {
   sanitizeError,
   normalizeGithubPrivateKey,
   logger,
+  encryptProviderKey,
+  decryptProviderKey,
+  maskProviderKey,
   bearerSecretMatches,
   redactSecrets,
   detectSecrets,
@@ -17401,4 +17555,4 @@ export {
   WebhookService,
   WorkflowGuideService
 };
-//# sourceMappingURL=chunk-N4FEI44O.js.map
+//# sourceMappingURL=chunk-F7AL3MQK.js.map

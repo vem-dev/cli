@@ -11,13 +11,13 @@ import {
 	parseVemUpdateBlock,
 	ScalableLogService,
 } from "@vem/core";
+import { VemReviewSchema } from "@vem/schemas";
 import chalk from "chalk";
 import Table from "cli-table3";
 import type { Command } from "commander";
 
 import {
 	API_URL,
-	backfillCommitHistory,
 	buildDeviceHeaders,
 	computeVemHash,
 	ensureAuthenticated,
@@ -33,7 +33,6 @@ import {
 	syncService,
 	taskService,
 	trackCommandUsage,
-	WEB_URL,
 } from "../runtime.js";
 
 import { syncParsedTaskUpdatesToRemote } from "./agent.js";
@@ -558,6 +557,116 @@ export function registerSyncCommands(program: Command) {
 				process.exitCode = 1;
 			}
 		});
+	// ── vem review submit ───────────────────────────────────────────────────────
+	// Used by AI agents running inside a cloud sandbox to submit a vem_review
+	// JSON block directly to the API — the same way `vem finalize` submits
+	// vem_update blocks. Requires VEM_TASK_RUN_ID + VEM_API_KEY env vars.
+	const reviewCmd = program
+		.command("review")
+		.description("Manage cycle validation reviews");
+
+	reviewCmd
+		.command("submit")
+		.description(
+			"Submit a vem_review block to the API from a cloud sandbox run",
+		)
+		.option(
+			"-f, --file <path>",
+			"Path to a file containing the vem_review JSON block",
+		)
+		.action(async (options) => {
+			await trackCommandUsage("review submit");
+			try {
+				let input = "";
+				if (options.file) {
+					input = await readFile(options.file, "utf-8");
+				} else if (!process.stdin.isTTY) {
+					input = await readStdin();
+				} else {
+					console.error(
+						chalk.red(
+							"Provide a vem_review JSON block via --file or pipe it into stdin.",
+						),
+					);
+					process.exitCode = 1;
+					return;
+				}
+
+				// Accept a bare JSON object or one wrapped in a ```json / ```vem_review fence.
+				const JSON_FENCE = /```(?:vem_review|json)\s*([\s\S]*?)```/i;
+				const fenceMatch = JSON_FENCE.exec(input);
+				const rawJson = fenceMatch ? fenceMatch[1] : input;
+
+				let parsedJson: unknown;
+				try {
+					parsedJson = JSON.parse(rawJson.trim());
+				} catch {
+					console.error(
+						chalk.red("\n✖ Review Submit Failed: input is not valid JSON\n"),
+					);
+					process.exitCode = 1;
+					return;
+				}
+
+				const result = VemReviewSchema.safeParse(parsedJson);
+				if (!result.success) {
+					console.error(
+						chalk.red("\n✖ Review Submit Failed: invalid vem_review payload"),
+						result.error.flatten(),
+					);
+					process.exitCode = 1;
+					return;
+				}
+
+				const sandboxRunId = process.env.VEM_TASK_RUN_ID;
+				const sandboxApiKey = process.env.VEM_API_KEY;
+				const sandboxApiUrl =
+					process.env.VEM_API_URL || "http://localhost:3002";
+
+				if (!sandboxRunId || !sandboxApiKey) {
+					console.error(
+						chalk.red(
+							"\n✖ Review Submit Failed: VEM_TASK_RUN_ID and VEM_API_KEY must be set.\n" +
+								"  This command is intended for use inside a cloud sandbox container.\n",
+						),
+					);
+					process.exitCode = 1;
+					return;
+				}
+
+				const res = await fetch(
+					`${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-review-structured`,
+					{
+						method: "POST",
+						headers: {
+							Authorization: `Bearer ${sandboxApiKey}`,
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({ review: result.data }),
+					},
+				);
+
+				if (!res.ok) {
+					const errText = await res.text().catch(() => "");
+					console.error(
+						chalk.red("[vem review submit] API submission failed:"),
+						res.status,
+						errText,
+					);
+					process.exitCode = 1;
+				} else {
+					console.log(chalk.green("\n✔ vem review submitted to API\n"));
+				}
+			} catch (error) {
+				if (error instanceof Error) {
+					console.error(chalk.red("\n✖ Review Submit Failed:"), error.message);
+				} else {
+					console.error(chalk.red("\n✖ Review Submit Failed:"), String(error));
+				}
+				process.exitCode = 1;
+			}
+		});
+
 	program
 		.command("queue")
 		.description("Manage offline snapshot queue")
