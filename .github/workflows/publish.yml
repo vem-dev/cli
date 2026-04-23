@@ -34,8 +34,13 @@ jobs:
 
       - name: Update npm for OIDC trusted publishing
         run: |
-          corepack enable
-          corepack prepare npm@11.13.0 --activate
+          # The pre-installed npm has corrupt deps; replace it via direct tarball download
+          TMPDIR=$(mktemp -d)
+          curl -fsSL https://registry.npmjs.org/npm/-/npm-11.13.0.tgz | tar xz -C "$TMPDIR"
+          NODE_MODULES=$(node -e "const path=require('path'); console.log(path.join(path.dirname(process.execPath),'../lib/node_modules'))")
+          rm -rf "$NODE_MODULES/npm"
+          mv "$TMPDIR/package" "$NODE_MODULES/npm"
+          rm -rf "$TMPDIR"
           npm --version  # must be 11.5.1+ for OIDC auto-detection
 
       - name: Publish to npm (OIDC trusted publishing)
