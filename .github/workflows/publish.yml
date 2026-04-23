@@ -33,7 +33,8 @@ jobs:
 
       - name: Update npm for OIDC trusted publishing
         run: |
-          npm install -g npm@latest
+          corepack enable
+          corepack prepare npm@latest --activate
           npm --version  # must be 11.5.1+ for OIDC auto-detection
 
       - name: Publish to npm (OIDC trusted publishing)
