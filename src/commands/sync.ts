@@ -458,17 +458,25 @@ export function registerSyncCommands(program: Command) {
 					process.env.VEM_API_URL || "http://localhost:3002";
 
 				if (sandboxRunId && sandboxApiKey) {
-					const res = await fetch(
-						`${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-update-structured`,
-						{
-							method: "POST",
-							headers: {
-								Authorization: `Bearer ${sandboxApiKey}`,
-								"Content-Type": "application/json",
+					const controller = new AbortController();
+					const timeoutId = setTimeout(() => controller.abort(), 30_000);
+					let res: Response;
+					try {
+						res = await fetch(
+							`${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-update-structured`,
+							{
+								method: "POST",
+								headers: {
+									Authorization: `Bearer ${sandboxApiKey}`,
+									"Content-Type": "application/json",
+								},
+								body: JSON.stringify({ update }),
+								signal: controller.signal,
 							},
-							body: JSON.stringify({ update }),
-						},
-					);
+						);
+					} finally {
+						clearTimeout(timeoutId);
+					}
 					if (!res.ok) {
 						const errText = await res.text().catch(() => "");
 						console.error(
@@ -634,17 +642,25 @@ export function registerSyncCommands(program: Command) {
 					return;
 				}
 
-				const res = await fetch(
-					`${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-review-structured`,
-					{
-						method: "POST",
-						headers: {
-							Authorization: `Bearer ${sandboxApiKey}`,
-							"Content-Type": "application/json",
+				const controller = new AbortController();
+				const timeoutId = setTimeout(() => controller.abort(), 30_000);
+				let res: Response;
+				try {
+					res = await fetch(
+						`${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-review-structured`,
+						{
+							method: "POST",
+							headers: {
+								Authorization: `Bearer ${sandboxApiKey}`,
+								"Content-Type": "application/json",
+							},
+							body: JSON.stringify({ review: result.data }),
+							signal: controller.signal,
 						},
-						body: JSON.stringify({ review: result.data }),
-					},
-				);
+					);
+				} finally {
+					clearTimeout(timeoutId);
+				}
 
 				if (!res.ok) {
 					const errText = await res.text().catch(() => "");

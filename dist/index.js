@@ -24,7 +24,7 @@ import {
   isVemInitialized,
   listAllAgentSessions,
   parseVemUpdateBlock
-} from "./chunk-F7AL3MQK.js";
+} from "./chunk-WHV6CP23.js";
 import {
   readCopilotSessionDetail
 } from "./chunk-PO3WNPAJ.js";
@@ -1167,7 +1167,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
       await updateTaskMetaRemote(configService, activeTask, {
         raw_vem_update: JSON.parse(JSON.stringify(update)),
-        cli_version: "0.1.64",
+        cli_version: "0.1.67",
         ...changelogEntry ? { changelog_entry: changelogEntry } : {}
       });
     }
@@ -1224,7 +1224,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
       ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
       raw_vem_update: JSON.parse(JSON.stringify(update)),
-      cli_version: "0.1.64",
+      cli_version: "0.1.67",
       // Task memory fields — stored in task_memory_entries on the API side.
       ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
       changelog_entry: changelogReasoning ?? null
@@ -1743,10 +1743,21 @@ This file is generated for the active task. Update task context via:
         const isSubcommand = !!firstNonOption && codexSubcommands.has(firstNonOption);
         const hasPrompt = !!firstNonOption && !isSubcommand;
         if (!isSubcommand && !hasPrompt) {
-          console.log(
-            chalk7.cyan("Auto-injecting context via initial Codex prompt...")
-          );
-          launchArgs = [...launchArgs, agentPrompt];
+          if (options.autoExit) {
+            console.log(
+              chalk7.cyan(
+                "Auto-injecting context via codex exec (non-interactive mode)..."
+              )
+            );
+            launchArgs = ["exec", ...launchArgs, agentPrompt];
+          } else {
+            console.log(
+              chalk7.cyan(
+                "Auto-injecting context via initial Codex prompt..."
+              )
+            );
+            launchArgs = [...launchArgs, agentPrompt];
+          }
         } else {
           console.log(
             chalk7.cyan(
@@ -3853,7 +3864,7 @@ function registerMaintenanceCommands(program2) {
   });
   program2.command("diff").description("Show differences between local and cloud state").option("--detailed", "Show detailed content diffs").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DiffService } = await import("./dist-NRMQJST3.js");
+      const { DiffService } = await import("./dist-XEIYUN4U.js");
       const diffService = new DiffService();
       const result = await diffService.compareWithLastPush();
       if (options.json) {
@@ -3911,7 +3922,7 @@ ${"\u2500".repeat(50)}`));
   });
   program2.command("doctor").description("Run health checks on VEM setup").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DoctorService } = await import("./dist-NRMQJST3.js");
+      const { DoctorService } = await import("./dist-XEIYUN4U.js");
       const doctorService = new DoctorService();
       const results = await doctorService.runAllChecks();
       if (options.json) {
@@ -7109,17 +7120,25 @@ Snapshot Contents:`));
       const sandboxApiKey = process.env.VEM_API_KEY;
       const sandboxApiUrl = "https://api.vem.dev";
       if (sandboxRunId && sandboxApiKey) {
-        const res = await fetch(
-          `${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-update-structured`,
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${sandboxApiKey}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ update })
-          }
-        );
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3e4);
+        let res;
+        try {
+          res = await fetch(
+            `${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-update-structured`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${sandboxApiKey}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({ update }),
+              signal: controller.signal
+            }
+          );
+        } finally {
+          clearTimeout(timeoutId);
+        }
         if (!res.ok) {
           const errText = await res.text().catch(() => "");
           console.error(
@@ -7257,17 +7276,25 @@ Snapshot Contents:`));
         process.exitCode = 1;
         return;
       }
-      const res = await fetch(
-        `${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-review-structured`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${sandboxApiKey}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({ review: result.data })
-        }
-      );
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3e4);
+      let res;
+      try {
+        res = await fetch(
+          `${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-review-structured`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${sandboxApiKey}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ review: result.data }),
+            signal: controller.signal
+          }
+        );
+      } finally {
+        clearTimeout(timeoutId);
+      }
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
         console.error(
@@ -9718,11 +9745,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.64",
+  release: "0.1.67",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.64").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.67").addHelpText(
   "after",
   `
 ${chalk19.bold("\n\u26A1 Power Workflows:")}

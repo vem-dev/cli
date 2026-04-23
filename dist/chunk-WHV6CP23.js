@@ -16033,7 +16033,7 @@ var ENTITLEMENTS = {
     baseSeats: 1,
     maxProjects: 50,
     maxDevices: null,
-    monthlyAiCredits: 25e3,
+    monthlyAiCredits: 2e4,
     allowModelSelection: true,
     cloudAgentRuns: true,
     maxConcurrentCloudRuns: 3
@@ -17555,4 +17555,4 @@ export {
   WebhookService,
   WorkflowGuideService
 };
-//# sourceMappingURL=chunk-F7AL3MQK.js.map
+//# sourceMappingURL=chunk-WHV6CP23.js.map

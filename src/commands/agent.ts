@@ -1253,10 +1253,26 @@ This file is generated for the active task. Update task context via:
 						!!firstNonOption && codexSubcommands.has(firstNonOption);
 					const hasPrompt = !!firstNonOption && !isSubcommand;
 					if (!isSubcommand && !hasPrompt) {
-						console.log(
-							chalk.cyan("Auto-injecting context via initial Codex prompt..."),
-						);
-						launchArgs = [...launchArgs, agentPrompt];
+						if (options.autoExit) {
+							// Non-interactive (sandbox/cloud) mode: use `codex exec` which
+							// runs headlessly and pipes results to stdout instead of
+							// launching the interactive full-screen TUI. --full-auto would
+							// launch the TUI and hang waiting for interactive input even
+							// though it auto-approves individual actions.
+							console.log(
+								chalk.cyan(
+									"Auto-injecting context via codex exec (non-interactive mode)...",
+								),
+							);
+							launchArgs = ["exec", ...launchArgs, agentPrompt];
+						} else {
+							console.log(
+								chalk.cyan(
+									"Auto-injecting context via initial Codex prompt...",
+								),
+							);
+							launchArgs = [...launchArgs, agentPrompt];
+						}
 					} else {
 						console.log(
 							chalk.cyan(

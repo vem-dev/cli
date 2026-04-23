@@ -58,7 +58,7 @@ import {
   validateEnv,
   validatePasswordStrength,
   validateWebhookUrl
-} from "./chunk-F7AL3MQK.js";
+} from "./chunk-WHV6CP23.js";
 import {
   computeCopilotSessionStats,
   getCopilotSessionsDir,
@@ -147,4 +147,4 @@ export {
   validatePasswordStrength,
   validateWebhookUrl
 };
-//# sourceMappingURL=dist-NRMQJST3.js.map
+//# sourceMappingURL=dist-XEIYUN4U.js.map
