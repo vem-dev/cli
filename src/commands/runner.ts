@@ -364,6 +364,7 @@ function prepareTaskBranch(
 	taskExternalId: string,
 	baseBranch: string,
 	remoteName: string,
+	reuseExistingBranch = false,
 ) {
 	try {
 		runGit(["fetch", remoteName]);
@@ -379,6 +380,12 @@ function prepareTaskBranch(
 		checkoutRef = baseBranch;
 	}
 	const baseHash = runGit(["rev-parse", checkoutRef]);
+	if (reuseExistingBranch) {
+		// Iterative run: check out the existing branch without creating a new one.
+		// New commits will land on the existing PR branch and the PR auto-updates.
+		runGit(["checkout", baseBranch]);
+		return { baseHash, branchName: baseBranch, checkoutRef };
+	}
 	const branchName = `vem/${sanitizeBranchSegment(taskExternalId)}-${Date.now().toString(36)}`;
 	runGit(["checkout", "-b", branchName, checkoutRef]);
 	return { baseHash, branchName, checkoutRef };
@@ -568,7 +575,12 @@ async function executeClaimedRun(input: {
 		const preparedBranch =
 			run.run_mode === "review"
 				? null
-				: prepareTaskBranch(run.task_external_id, baseBranch, remote.name);
+				: prepareTaskBranch(
+						run.task_external_id,
+						baseBranch,
+						remote.name,
+						!!run.agent_base_branch,
+					);
 		if (preparedBranch) {
 			baseHash = preparedBranch.baseHash;
 			branchName = preparedBranch.branchName;
@@ -838,7 +850,9 @@ async function executeClaimedRunInSandbox(input: {
 	// Use a unique attempt path — the same run can be re-claimed after a crash,
 	// and a previous attempt's finally block may still be cleaning up the old path.
 	worktreePath = `/tmp/vem-run-${run.id}-${Date.now().toString(36)}`;
-	branchName = `vem/${sanitizeBranchSegment(run.task_external_id)}-${Date.now().toString(36)}`;
+	branchName = run.agent_base_branch
+		? run.agent_base_branch
+		: `vem/${sanitizeBranchSegment(run.task_external_id)}-${Date.now().toString(36)}`;
 
 	try {
 		// Ensure image exists before allocating resources
@@ -905,8 +919,11 @@ async function executeClaimedRunInSandbox(input: {
 			{ stdio: "pipe" },
 		);
 
-		// Create and checkout the task branch inside the clone
-		runGitIn(worktreePath, ["checkout", "-b", branchName]);
+		// Create and checkout the task branch inside the clone.
+		// For iterative runs branchName === baseBranch (we cloned it above), so skip.
+		if (branchName !== baseBranch) {
+			runGitIn(worktreePath, ["checkout", "-b", branchName]);
+		}
 
 		// Fix origin URL to point at the real remote (not the local clone source)
 		if (remoteUrl) {

@@ -1167,7 +1167,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
       await updateTaskMetaRemote(configService, activeTask, {
         raw_vem_update: JSON.parse(JSON.stringify(update)),
-        cli_version: "0.1.68",
+        cli_version: "0.1.69",
         ...changelogEntry ? { changelog_entry: changelogEntry } : {}
       });
     }
@@ -1224,7 +1224,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
       ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
       raw_vem_update: JSON.parse(JSON.stringify(update)),
-      cli_version: "0.1.68",
+      cli_version: "0.1.69",
       // Task memory fields — stored in task_memory_entries on the API side.
       ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
       changelog_entry: changelogReasoning ?? null
@@ -4816,7 +4816,7 @@ async function resolveGitRemote(configService) {
     return { name: preferredRemote, url: null };
   }
 }
-function prepareTaskBranch(taskExternalId, baseBranch, remoteName) {
+function prepareTaskBranch(taskExternalId, baseBranch, remoteName, reuseExistingBranch = false) {
   try {
     runGit(["fetch", remoteName]);
   } catch {
@@ -4830,6 +4830,10 @@ function prepareTaskBranch(taskExternalId, baseBranch, remoteName) {
     checkoutRef = baseBranch;
   }
   const baseHash = runGit(["rev-parse", checkoutRef]);
+  if (reuseExistingBranch) {
+    runGit(["checkout", baseBranch]);
+    return { baseHash, branchName: baseBranch, checkoutRef };
+  }
   const branchName = `vem/${sanitizeBranchSegment(taskExternalId)}-${Date.now().toString(36)}`;
   runGit(["checkout", "-b", branchName, checkoutRef]);
   return { baseHash, branchName, checkoutRef };
@@ -4957,7 +4961,12 @@ async function executeClaimedRun(input) {
     } catch {
       originalBranch = null;
     }
-    const preparedBranch = run.run_mode === "review" ? null : prepareTaskBranch(run.task_external_id, baseBranch, remote.name);
+    const preparedBranch = run.run_mode === "review" ? null : prepareTaskBranch(
+      run.task_external_id,
+      baseBranch,
+      remote.name,
+      !!run.agent_base_branch
+    );
     if (preparedBranch) {
       baseHash = preparedBranch.baseHash;
       branchName = preparedBranch.branchName;
@@ -5171,7 +5180,7 @@ async function executeClaimedRunInSandbox(input) {
   const baseBranch = run.agent_base_branch || "main";
   const remote = await resolveGitRemote(configService);
   worktreePath = `/tmp/vem-run-${run.id}-${Date.now().toString(36)}`;
-  branchName = `vem/${sanitizeBranchSegment(run.task_external_id)}-${Date.now().toString(36)}`;
+  branchName = run.agent_base_branch ? run.agent_base_branch : `vem/${sanitizeBranchSegment(run.task_external_id)}-${Date.now().toString(36)}`;
   try {
     ensureSandboxImage();
     try {
@@ -5215,7 +5224,9 @@ async function executeClaimedRunInSandbox(input) {
       ],
       { stdio: "pipe" }
     );
-    runGitIn(worktreePath, ["checkout", "-b", branchName]);
+    if (branchName !== baseBranch) {
+      runGitIn(worktreePath, ["checkout", "-b", branchName]);
+    }
     if (remoteUrl) {
       runGitIn(worktreePath, ["remote", "set-url", "origin", remoteUrl]);
     }
@@ -9767,11 +9778,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.68",
+  release: "0.1.69",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.68").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.69").addHelpText(
   "after",
   `
 ${chalk19.bold("\n\u26A1 Power Workflows:")}

@@ -1,6 +1,6 @@
 {
 	"name": "@vemdev/cli",
-	"version": "0.1.68",
+	"version": "0.1.69",
 	"description": "Official VEM CLI for project memory workflows.",
 	"type": "module",
 	"license": "MIT",
