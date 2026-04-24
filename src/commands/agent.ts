@@ -1401,10 +1401,38 @@ This file is generated for the active task. Update task context via:
 					},
 				});
 
+				// Safety net: if the agent process itself hangs (e.g. codex stuck on
+				// an API call), kill the entire process group after the timeout budget
+				// minus a 90s buffer for post-processing. Only active when running
+				// inside a cloud sandbox (SANDBOX_AGENT_TIMEOUT_SECONDS is set by the
+				// Northflank dispatcher).
+				let childKillTimer: ReturnType<typeof setTimeout> | undefined;
+				const sandboxTimeoutSecs = Number(
+					process.env.SANDBOX_AGENT_TIMEOUT_SECONDS,
+				);
+				if (sandboxTimeoutSecs > 0 && child.pid) {
+					const killAfterMs = Math.max(
+						30_000,
+						(sandboxTimeoutSecs - 90) * 1000,
+					);
+					childKillTimer = setTimeout(() => {
+						console.error(
+							`[vem-agent] Child process timed out after ${sandboxTimeoutSecs - 90}s — force-killing process group ${child.pid}`,
+						);
+						try {
+							process.kill(-(child.pid as number), "SIGKILL");
+						} catch {
+							// process group already gone
+						}
+					}, killAfterMs);
+					childKillTimer.unref?.();
+				}
+
 				let startError: NodeJS.ErrnoException | null = null;
 				let exitCode: number | null = null;
 				await new Promise<void>((resolve) => {
 					child.on("exit", (code, signal) => {
+						if (childKillTimer) clearTimeout(childKillTimer);
 						exitCode = code;
 						if (code === null && signal) {
 							console.error(
@@ -1423,6 +1451,7 @@ This file is generated for the active task. Update task context via:
 						resolve();
 					});
 					child.on("error", (err) => {
+						if (childKillTimer) clearTimeout(childKillTimer);
 						startError = err;
 						resolve();
 					});

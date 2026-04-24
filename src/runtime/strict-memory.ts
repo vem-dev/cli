@@ -115,7 +115,10 @@ async function collectStrictMemoryUpdate(
 }
 
 async function promptAdditionalTaskNotes(): Promise<string | undefined> {
-	if (!process.stdin.isTTY) return undefined;
+	// Skip in non-interactive environments. CI=1 is set by the cloud sandbox
+	// entrypoint for codex runs — script(1) always gives isTTY=true there, so
+	// the CI check is the only reliable way to prevent prompts from blocking.
+	if (!process.stdin.isTTY || process.env.CI === "1") return undefined;
 	const wantsNotes = await prompts({
 		type: "confirm",
 		name: "value",
