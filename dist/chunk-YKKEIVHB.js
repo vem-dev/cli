@@ -15994,7 +15994,7 @@ var ENTITLEMENTS = {
     personalOnly: true,
     historyDays: 7,
     embeddings: false,
-    advancedRepoHistoryAnalysis: false,
+    advancedRepoHistoryAnalysis: true,
     webhooks: false,
     baseSeats: 1,
     maxProjects: 1,
@@ -16009,7 +16009,7 @@ var ENTITLEMENTS = {
     label: "Pro",
     allowInvites: true,
     personalOnly: false,
-    historyDays: null,
+    historyDays: 30,
     embeddings: true,
     advancedRepoHistoryAnalysis: true,
     webhooks: true,
@@ -16026,7 +16026,7 @@ var ENTITLEMENTS = {
     label: "Ultra",
     allowInvites: true,
     personalOnly: false,
-    historyDays: null,
+    historyDays: 365,
     embeddings: true,
     advancedRepoHistoryAnalysis: true,
     webhooks: true,
@@ -16096,23 +16096,67 @@ var commonEnvSchema = {
   DATABASE_URL: external_exports.string().url("DATABASE_URL must be a valid URL")
 };
 
+// ../../packages/core/dist/error-codes.js
+var ERROR_CODES = {
+  // Database / consistency
+  ERR_DB_001: "A database error occurred.",
+  // Conflicts
+  ERR_CONFLICT_001: "This resource already exists.",
+  // Repository / GitHub
+  ERR_REPO_001: "Repository not found or access denied.",
+  ERR_REPO_002: "Repository is empty.",
+  // Indexing
+  ERR_INDEX_001: "Project is locked and cannot be indexed.",
+  ERR_INDEX_002: "Indexer is at capacity. Please try again shortly.",
+  // Auth
+  ERR_AUTH_001: "Unauthorized.",
+  ERR_AUTH_002: "Installation ID mismatch.",
+  // Generic / internal
+  ERR_INTERNAL_001: "Something went wrong."
+};
+
 // ../../packages/core/dist/errors.js
+import { randomBytes } from "crypto";
+function generateCorrelationId() {
+  return randomBytes(4).toString("hex");
+}
 function sanitizeError(err) {
-  if (!err)
-    return { message: "Unknown error", status: 500 };
+  const correlationId = generateCorrelationId();
+  const status = err?.status ?? 500;
+  if (!err) {
+    const code2 = "ERR_INTERNAL_001";
+    console.error(`[ERR ${correlationId}]`, "sanitizeError called with falsy value");
+    return {
+      message: `${ERROR_CODES[code2]} If the issue persists, contact support with code: ${correlationId}`,
+      status: 500,
+      code: code2,
+      correlationId
+    };
+  }
   const rawMessage = String(err.message || err);
-  let message = rawMessage;
-  const status = err.status || 500;
   if (rawMessage.toLowerCase().includes("unique constraint") || rawMessage.toLowerCase().includes("unique_repo_url_idx") || rawMessage.includes("23505")) {
-    message = "Already exists.";
-    return { message, status: 409 };
+    const code2 = "ERR_CONFLICT_001";
+    console.error(`[ERR ${correlationId}] ${code2}`, rawMessage);
+    return { message: ERROR_CODES[code2], status: 409, code: code2, correlationId };
   }
-  if (rawMessage.toLowerCase().includes("insert into") || rawMessage.toLowerCase().includes("update ") || rawMessage.toLowerCase().includes("delete from") || rawMessage.toLowerCase().includes("select ") || rawMessage.toLowerCase().includes("postgreserror") || rawMessage.toLowerCase().includes("violates foreign key constraint")) {
-    message = "A database consistency error occurred. Please try again.";
-  } else {
-    message = rawMessage.slice(0, 500);
+  if (rawMessage.toLowerCase().includes("insert into") || rawMessage.toLowerCase().includes("update ") || rawMessage.toLowerCase().includes("delete from") || rawMessage.toLowerCase().includes("select ") || rawMessage.toLowerCase().includes("postgreserror") || rawMessage.toLowerCase().includes("violates foreign key constraint") || rawMessage.toLowerCase().includes("foreign key") || rawMessage.includes("23503")) {
+    const code2 = "ERR_DB_001";
+    console.error(`[ERR ${correlationId}] ${code2}`, rawMessage);
+    return { message: ERROR_CODES[code2], status, code: code2, correlationId };
   }
-  return { message, status };
+  if (rawMessage.length <= 300 && !rawMessage.includes("\n") && !rawMessage.includes("Error:")) {
+    const code2 = "ERR_INTERNAL_001";
+    console.error(`[ERR ${correlationId}] ${code2}`, rawMessage);
+    return { message: rawMessage, status, code: code2, correlationId };
+  }
+  const code = "ERR_INTERNAL_001";
+  console.error(`[ERR ${correlationId}] ${code}`, rawMessage);
+  return {
+    message: `${ERROR_CODES[code]} If the issue persists, contact support with code: ${correlationId}`,
+    status,
+    code,
+    correlationId
+  };
 }
 
 // ../../packages/core/dist/github-private-key.js
@@ -16194,7 +16238,6 @@ import pino from "pino";
 var isDev = process.env.NODE_ENV === "development";
 var logger = pino({
   level: process.env.LOG_LEVEL || "info",
-  // GCP Cloud Logging uses 'severity' instead of 'level'
   // We map pino levels to Google Cloud severity levels
   formatters: {
     level(label) {
@@ -16228,7 +16271,7 @@ var logger = pino({
 });
 
 // ../../packages/core/dist/provider-key-encryption.js
-import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
+import { createCipheriv, createDecipheriv, randomBytes as randomBytes2 } from "crypto";
 var ALGORITHM = "aes-256-gcm";
 var IV_BYTES = 12;
 var AUTH_TAG_BYTES = 16;
@@ -16241,7 +16284,7 @@ function getEncryptionKey() {
 }
 function encryptProviderKey(plaintext) {
   const key = getEncryptionKey();
-  const iv = randomBytes(IV_BYTES);
+  const iv = randomBytes2(IV_BYTES);
   const cipher = createCipheriv(ALGORITHM, key, iv);
   const encrypted = Buffer.concat([
     cipher.update(plaintext, "utf8"),
@@ -16317,6 +16360,21 @@ var SECRET_PATTERNS = [
     name: "slack_token",
     regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
     replace: "[REDACTED:slack_token]"
+  },
+  {
+    name: "openai_api_key",
+    regex: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g,
+    replace: "[REDACTED:openai_api_key]"
+  },
+  {
+    name: "anthropic_api_key",
+    regex: /\bsk-ant-(?:api\d+-)?[A-Za-z0-9_-]{20,}\b/g,
+    replace: "[REDACTED:anthropic_api_key]"
+  },
+  {
+    name: "stripe_key",
+    regex: /\bsk_(?:live|test)_[A-Za-z0-9]{20,}\b/g,
+    replace: "[REDACTED:stripe_key]"
   }
 ];
 function redactSecrets(input) {
@@ -17536,6 +17594,7 @@ export {
   getHistoryCutoff,
   validateEnv,
   commonEnvSchema,
+  ERROR_CODES,
   sanitizeError,
   normalizeGithubPrivateKey,
   logger,
@@ -17555,4 +17614,4 @@ export {
   WebhookService,
   WorkflowGuideService
 };
-//# sourceMappingURL=chunk-WHV6CP23.js.map
+//# sourceMappingURL=chunk-YKKEIVHB.js.map

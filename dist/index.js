@@ -24,7 +24,7 @@ import {
   isVemInitialized,
   listAllAgentSessions,
   parseVemUpdateBlock
-} from "./chunk-WHV6CP23.js";
+} from "./chunk-YKKEIVHB.js";
 import {
   readCopilotSessionDetail
 } from "./chunk-PO3WNPAJ.js";
@@ -1167,7 +1167,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
       await updateTaskMetaRemote(configService, activeTask, {
         raw_vem_update: JSON.parse(JSON.stringify(update)),
-        cli_version: "0.1.70",
+        cli_version: "0.1.71",
         ...changelogEntry ? { changelog_entry: changelogEntry } : {}
       });
     }
@@ -1224,7 +1224,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
       ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
       raw_vem_update: JSON.parse(JSON.stringify(update)),
-      cli_version: "0.1.70",
+      cli_version: "0.1.71",
       // Task memory fields — stored in task_memory_entries on the API side.
       ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
       changelog_entry: changelogReasoning ?? null
@@ -3886,7 +3886,7 @@ function registerMaintenanceCommands(program2) {
   });
   program2.command("diff").description("Show differences between local and cloud state").option("--detailed", "Show detailed content diffs").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DiffService } = await import("./dist-XEIYUN4U.js");
+      const { DiffService } = await import("./dist-TO54LRVA.js");
       const diffService = new DiffService();
       const result = await diffService.compareWithLastPush();
       if (options.json) {
@@ -3944,7 +3944,7 @@ ${"\u2500".repeat(50)}`));
   });
   program2.command("doctor").description("Run health checks on VEM setup").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DoctorService } = await import("./dist-XEIYUN4U.js");
+      const { DoctorService } = await import("./dist-TO54LRVA.js");
       const doctorService = new DoctorService();
       const results = await doctorService.runAllChecks();
       if (options.json) {
@@ -4594,13 +4594,7 @@ function commandExists(command) {
     return false;
   }
 }
-var KNOWN_RUNNER_AGENTS = [
-  "copilot",
-  "gh",
-  "claude",
-  "gemini",
-  "codex"
-];
+var KNOWN_RUNNER_AGENTS = ["copilot", "gh", "claude", "codex"];
 function hasSandboxCredentials(agent) {
   if (agent === "claude") {
     return typeof process.env.ANTHROPIC_API_KEY === "string" && process.env.ANTHROPIC_API_KEY.trim().length > 0;
@@ -4616,9 +4610,6 @@ function hasSandboxCredentials(agent) {
     } catch {
       return false;
     }
-  }
-  if (agent === "gemini") {
-    return typeof process.env.GEMINI_API_KEY === "string" && process.env.GEMINI_API_KEY.trim().length > 0;
   }
   if (agent === "codex") {
     return typeof process.env.OPENAI_API_KEY === "string" && process.env.OPENAI_API_KEY.trim().length > 0;
@@ -4764,14 +4755,6 @@ function collectSandboxCredentials(agent) {
       );
       console.error(
         chalk13.gray("  Set GITHUB_TOKEN env var or run: gh auth login")
-      );
-      process.exit(1);
-    }
-  } else if (agent === "gemini") {
-    addFromEnv("GEMINI_API_KEY");
-    if (!creds.GEMINI_API_KEY) {
-      console.error(
-        chalk13.red(`\u2717 GEMINI_API_KEY is not set. Required for --agent gemini.`)
       );
       process.exit(1);
     }
@@ -4965,7 +4948,7 @@ async function executeClaimedRun(input) {
       run.task_external_id,
       baseBranch,
       remote.name,
-      !!run.agent_base_branch
+      !!run.reuse_existing_branch
     );
     if (preparedBranch) {
       baseHash = preparedBranch.baseHash;
@@ -5180,7 +5163,7 @@ async function executeClaimedRunInSandbox(input) {
   const baseBranch = run.agent_base_branch || "main";
   const remote = await resolveGitRemote(configService);
   worktreePath = `/tmp/vem-run-${run.id}-${Date.now().toString(36)}`;
-  branchName = run.agent_base_branch ? run.agent_base_branch : `vem/${sanitizeBranchSegment(run.task_external_id)}-${Date.now().toString(36)}`;
+  branchName = run.reuse_existing_branch ? run.agent_base_branch : `vem/${sanitizeBranchSegment(run.task_external_id)}-${Date.now().toString(36)}`;
   try {
     ensureSandboxImage();
     try {
@@ -9778,11 +9761,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.70",
+  release: "0.1.71",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.70").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.71").addHelpText(
   "after",
   `
 ${chalk19.bold("\n\u26A1 Power Workflows:")}

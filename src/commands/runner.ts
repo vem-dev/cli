@@ -18,6 +18,7 @@ type ClaimedTaskRun = {
 	user_prompt?: string | null;
 	task_instructions?: string | null;
 	agent_base_branch?: string | null;
+	reuse_existing_branch?: boolean;
 	agent_name?: string | null;
 	run_mode?: string | null;
 };
@@ -81,13 +82,7 @@ function commandExists(command: string) {
 	}
 }
 
-const KNOWN_RUNNER_AGENTS = [
-	"copilot",
-	"gh",
-	"claude",
-	"gemini",
-	"codex",
-] as const;
+const KNOWN_RUNNER_AGENTS = ["copilot", "gh", "claude", "codex"] as const;
 
 function hasSandboxCredentials(agent: string) {
 	if (agent === "claude") {
@@ -107,12 +102,6 @@ function hasSandboxCredentials(agent: string) {
 		} catch {
 			return false;
 		}
-	}
-	if (agent === "gemini") {
-		return (
-			typeof process.env.GEMINI_API_KEY === "string" &&
-			process.env.GEMINI_API_KEY.trim().length > 0
-		);
 	}
 	if (agent === "codex") {
 		return (
@@ -290,14 +279,6 @@ function collectSandboxCredentials(agent: string): Record<string, string> {
 			);
 			console.error(
 				chalk.gray("  Set GITHUB_TOKEN env var or run: gh auth login"),
-			);
-			process.exit(1);
-		}
-	} else if (agent === "gemini") {
-		addFromEnv("GEMINI_API_KEY");
-		if (!creds.GEMINI_API_KEY) {
-			console.error(
-				chalk.red(`✗ GEMINI_API_KEY is not set. Required for --agent gemini.`),
 			);
 			process.exit(1);
 		}
@@ -579,7 +560,7 @@ async function executeClaimedRun(input: {
 						run.task_external_id,
 						baseBranch,
 						remote.name,
-						!!run.agent_base_branch,
+						!!run.reuse_existing_branch,
 					);
 		if (preparedBranch) {
 			baseHash = preparedBranch.baseHash;
@@ -850,8 +831,8 @@ async function executeClaimedRunInSandbox(input: {
 	// Use a unique attempt path — the same run can be re-claimed after a crash,
 	// and a previous attempt's finally block may still be cleaning up the old path.
 	worktreePath = `/tmp/vem-run-${run.id}-${Date.now().toString(36)}`;
-	branchName = run.agent_base_branch
-		? run.agent_base_branch
+	branchName = run.reuse_existing_branch
+		? run.agent_base_branch!
 		: `vem/${sanitizeBranchSegment(run.task_external_id)}-${Date.now().toString(36)}`;
 
 	try {

@@ -12,6 +12,7 @@ import {
   DEFAULT_TIER,
   DiffService,
   DoctorService,
+  ERROR_CODES,
   KNOWN_AGENT_INSTRUCTION_FILES,
   QUEUE_DIR,
   SCRATCHPAD_FILE,
@@ -58,7 +59,7 @@ import {
   validateEnv,
   validatePasswordStrength,
   validateWebhookUrl
-} from "./chunk-WHV6CP23.js";
+} from "./chunk-YKKEIVHB.js";
 import {
   computeCopilotSessionStats,
   getCopilotSessionsDir,
@@ -90,6 +91,7 @@ export {
   DEFAULT_TIER,
   DiffService,
   DoctorService,
+  ERROR_CODES,
   KNOWN_AGENT_INSTRUCTION_FILES,
   QUEUE_DIR,
   SCRATCHPAD_FILE,
@@ -147,4 +149,4 @@ export {
   validatePasswordStrength,
   validateWebhookUrl
 };
-//# sourceMappingURL=dist-XEIYUN4U.js.map
+//# sourceMappingURL=dist-TO54LRVA.js.map
