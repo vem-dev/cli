@@ -1175,7 +1175,8 @@ This file is generated for the active task. Update task context via:
 				// 3. Run Agent
 				const strictMemory =
 					(options.strictMemory ?? true) &&
-					process.env.VEM_STRICT_MEMORY !== "0";
+					process.env.VEM_STRICT_MEMORY !== "0" &&
+					process.env.VEM_RUN_MODE !== "plan_creation";
 				const sessionStartedAt = Date.now();
 				console.log(chalk.bold(`\n🤖 Launching ${selectedCommand}...\n`));
 
@@ -1217,7 +1218,11 @@ This file is generated for the active task. Update task context via:
 					? ` Additional web-run instructions: ${runnerInstructions}.`
 					: "";
 
-				const agentPrompt = `You are working on task ${activeTask?.id || "N/A"}.${childTaskPromptBlock}${runnerInstructionsBlock} Read .vem/current_context.md for project context and .vem/task_context.md for task-specific context. STRICT MEMORY: if you make changes, you must provide a vem_update block that includes context (full updated CONTEXT.md), current_state, changelog_append, decisions_append, and tasks (array — use the field name "tasks", not "task_update": [{ "id": "${activeTask?.id || "TASK-ID"}", "status": "done", "evidence": [...], "task_context_summary": "..." }]). Complete the task using these instructions. When completing tasks, include your agent name and confirm required validation steps (build/tests) in evidence.`;
+				const isPlanCreationMode = process.env.VEM_RUN_MODE === "plan_creation";
+
+				const agentPrompt = isPlanCreationMode
+					? `You are working on task ${activeTask?.id || "N/A"} — research and planning mode.${runnerInstructionsBlock} Read .vem/current_context.md for project context and .vem/task_context.md for task-specific context. Your goal is to research this task deeply and produce a structured plan document. Do NOT write any code. Do NOT commit or push anything. After your research, output a vem_plan JSON block as follows:\n{"vem_plan":{"title":"<concise plan title>","body":"<full markdown plan with sections for Overview, Findings, Recommendations, and Next Steps>"}}\nOutput the vem_plan block as the last thing in your response, on its own line.`
+					: `You are working on task ${activeTask?.id || "N/A"}.${childTaskPromptBlock}${runnerInstructionsBlock} Read .vem/current_context.md for project context and .vem/task_context.md for task-specific context. STRICT MEMORY: if you make changes, you must provide a vem_update block that includes context (full updated CONTEXT.md), current_state, changelog_append, decisions_append, and tasks (array — use the field name "tasks", not "task_update": [{ "id": "${activeTask?.id || "TASK-ID"}", "status": "done", "evidence": [...], "task_context_summary": "..." }]). Complete the task using these instructions. When completing tasks, include your agent name and confirm required validation steps (build/tests) in evidence.`;
 
 				// Tool-specific injections
 				if (baseCmd === "gemini" || baseCmd === "echo") {

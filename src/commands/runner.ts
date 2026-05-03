@@ -318,6 +318,49 @@ function buildTaskRunPrTitle(
 		: `Implement ${taskExternalId}`;
 }
 
+function parseVemPlanBlock(
+	output: string,
+): { title: string; body: string } | null {
+	// Look for a {"vem_plan":{...}} JSON object in the output.
+	// The block may appear anywhere — scan line by line for the opening token.
+	const marker = '"vem_plan"';
+	const idx = output.lastIndexOf(marker);
+	if (idx === -1) return null;
+
+	// Walk backwards to find the opening brace of the containing object
+	let start = idx - 1;
+	while (start >= 0 && output[start] !== "{") start--;
+	if (start < 0) return null;
+
+	// Find the matching closing brace by counting depth
+	let depth = 0;
+	let end = start;
+	for (; end < output.length; end++) {
+		if (output[end] === "{") depth++;
+		else if (output[end] === "}") {
+			depth--;
+			if (depth === 0) break;
+		}
+	}
+	if (depth !== 0) return null;
+
+	try {
+		const parsed = JSON.parse(output.slice(start, end + 1)) as {
+			vem_plan?: { title?: unknown; body?: unknown };
+		};
+		const plan = parsed.vem_plan;
+		if (!plan || typeof plan.title !== "string" || !plan.title.trim()) {
+			return null;
+		}
+		return {
+			title: plan.title.trim(),
+			body: typeof plan.body === "string" ? plan.body : "",
+		};
+	} catch {
+		return null;
+	}
+}
+
 async function resolveGitRemote(
 	configService: ConfigService,
 ): Promise<{ name: string; url: string | null }> {
@@ -536,6 +579,8 @@ async function executeClaimedRun(input: {
 	let exitCode: number | null = null;
 	let completionError: string | null = null;
 	let createPr = false;
+	let stdoutBuffer = "";
+	let createdPlanId: string | null = null;
 	const baseBranch = run.agent_base_branch || "main";
 	const remote = await resolveGitRemote(configService);
 
@@ -553,8 +598,10 @@ async function executeClaimedRun(input: {
 			originalBranch = null;
 		}
 
+		const isPlanCreationMode = run.run_mode === "plan_creation";
+
 		const preparedBranch =
-			run.run_mode === "review"
+			run.run_mode === "review" || isPlanCreationMode
 				? null
 				: prepareTaskBranch(
 						run.task_external_id,
@@ -573,7 +620,9 @@ async function executeClaimedRun(input: {
 				stream: "system",
 				chunk: preparedBranch
 					? `Prepared branch ${branchName} from ${preparedBranch.checkoutRef}\n`
-					: `Review mode — running on current branch (no new branch created)\n`,
+					: isPlanCreationMode
+						? "Plan creation mode — running research agent (no branch created)\n"
+						: `Review mode — running on current branch (no new branch created)\n`,
 			},
 		]);
 
@@ -664,6 +713,7 @@ async function executeClaimedRun(input: {
 		child.stdout.on("data", async (chunk: Buffer | string) => {
 			const text = chunk.toString();
 			process.stdout.write(text);
+			if (isPlanCreationMode) stdoutBuffer += text;
 			void appendRunLogs(configService, apiKey, run.id, [
 				{ sequence: sequence++, stream: "stdout", chunk: text },
 			]);
@@ -672,6 +722,7 @@ async function executeClaimedRun(input: {
 		child.stderr.on("data", async (chunk: Buffer | string) => {
 			const text = chunk.toString();
 			process.stderr.write(text);
+			if (isPlanCreationMode) stdoutBuffer += text;
 			void appendRunLogs(configService, apiKey, run.id, [
 				{ sequence: sequence++, stream: "stderr", chunk: text },
 			]);
@@ -704,6 +755,68 @@ async function executeClaimedRun(input: {
 		} else {
 			completionStatus = "failed";
 			completionError = `Agent process exited with code ${result.code ?? "unknown"}.`;
+		}
+
+		// Plan creation mode: extract vem_plan block from agent output and save plan
+		if (isPlanCreationMode && completionStatus === "completed") {
+			const planData = parseVemPlanBlock(stdoutBuffer);
+			if (planData) {
+				try {
+					const planRes = await apiRequest(
+						configService,
+						apiKey,
+						`/projects/${projectId}/project-plans`,
+						{
+							method: "POST",
+							body: JSON.stringify({
+								title: planData.title,
+								body: planData.body,
+								source: "agent",
+								task_run_id: run.id,
+							}),
+						},
+					);
+					if (planRes.ok) {
+						const planBody = (await planRes.json().catch(() => ({}))) as {
+							plan?: { id?: string };
+						};
+						createdPlanId = planBody.plan?.id ?? null;
+						await appendRunLogs(configService, apiKey, run.id, [
+							{
+								sequence: sequence++,
+								stream: "system",
+								chunk: `Plan created: ${createdPlanId ?? "unknown"}\n`,
+							},
+						]);
+					} else {
+						const errBody = await planRes.json().catch(() => ({}));
+						await appendRunLogs(configService, apiKey, run.id, [
+							{
+								sequence: sequence++,
+								stream: "system",
+								chunk: `Warning: failed to create plan (${planRes.status}): ${JSON.stringify(errBody)}\n`,
+							},
+						]);
+					}
+				} catch (planErr) {
+					await appendRunLogs(configService, apiKey, run.id, [
+						{
+							sequence: sequence++,
+							stream: "system",
+							chunk: `Warning: error creating plan: ${planErr instanceof Error ? planErr.message : String(planErr)}\n`,
+						},
+					]);
+				}
+			} else {
+				await appendRunLogs(configService, apiKey, run.id, [
+					{
+						sequence: sequence++,
+						stream: "system",
+						chunk:
+							"Warning: no vem_plan block found in agent output. Plan was not created.\n",
+					},
+				]);
+			}
 		}
 
 		if (baseHash) {
@@ -771,9 +884,12 @@ async function executeClaimedRun(input: {
 			pr_body: run.user_prompt?.trim()
 				? `Triggered from VEM web.\n\nInstructions:\n${run.user_prompt.trim()}`
 				: "Triggered from VEM web.",
+			...(createdPlanId ? { plan_id: createdPlanId } : {}),
 			summary:
 				completionStatus === "completed"
-					? "Runner completed the queued task run."
+					? createdPlanId
+						? `Runner completed the queued task run. Plan created: ${createdPlanId}.`
+						: "Runner completed the queued task run."
 					: `Runner finished with status ${completionStatus}.`,
 		});
 
@@ -1087,8 +1203,8 @@ async function executeClaimedRunInSandbox(input: {
 
 		if (exitCode === 0 && !cancellationRequested && !timedOut) {
 			completionStatus = "completed";
-			// In review mode the agent must not commit — skip commit/PR logic
-			if (run.run_mode !== "review") {
+			// In review/plan_creation mode the agent must not commit — skip commit/PR logic
+			if (run.run_mode !== "review" && run.run_mode !== "plan_creation") {
 				// Collect commits made inside the container (in the sandbox clone)
 				try {
 					const output = runGitIn(worktreePath!, [
@@ -1117,11 +1233,12 @@ async function executeClaimedRunInSandbox(input: {
 			.filter(Boolean)
 			.slice(-1000); // last 1000 lines covers any reasonable vem_update block
 
-		// Push branch from sandbox clone if we have commits (skip in review mode)
+		// Push branch from sandbox clone if we have commits (skip in review/plan_creation mode)
 		if (
 			completionStatus === "completed" &&
 			commitHashes.length > 0 &&
-			run.run_mode !== "review"
+			run.run_mode !== "review" &&
+			run.run_mode !== "plan_creation"
 		) {
 			try {
 				runGitIn(worktreePath!, ["push", "-u", "origin", branchName!], {
@@ -1192,6 +1309,39 @@ async function executeClaimedRunInSandbox(input: {
 			}
 		}
 
+		// Plan creation mode: extract vem_plan block from sandbox stdout and deposit plan
+		let sandboxCreatedPlanId: string | null = null;
+		if (run.run_mode === "plan_creation" && completionStatus === "completed") {
+			const fullOutput = fullDockerLogLines.join("\n");
+			const planData = parseVemPlanBlock(fullOutput);
+			if (planData) {
+				try {
+					const planRes = await apiRequest(
+						configService,
+						apiKey,
+						`/projects/${projectId}/project-plans`,
+						{
+							method: "POST",
+							body: JSON.stringify({
+								title: planData.title,
+								body: planData.body,
+								source: "agent",
+								task_run_id: run.id,
+							}),
+						},
+					);
+					if (planRes.ok) {
+						const planBody = (await planRes.json().catch(() => ({}))) as {
+							plan?: { id?: string };
+						};
+						sandboxCreatedPlanId = planBody.plan?.id ?? null;
+					}
+				} catch {
+					/* non-fatal — log will surface in run output */
+				}
+			}
+		}
+
 		await completeTaskRunWithRetry(configService, apiKey, run.id, {
 			project_id: projectId,
 			status: completionStatus,
@@ -1204,6 +1354,7 @@ async function executeClaimedRunInSandbox(input: {
 			pr_body: run.user_prompt?.trim()
 				? `Triggered from VEM web.\n\nInstructions:\n${run.user_prompt.trim()}`
 				: "Triggered from VEM web.",
+			...(sandboxCreatedPlanId ? { plan_id: sandboxCreatedPlanId } : {}),
 			// Pass the full Docker log so the API can parse the vem_update block
 			// reliably even when some live-streamed chunks were dropped.
 			full_log_lines:

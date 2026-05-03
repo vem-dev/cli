@@ -14086,7 +14086,9 @@ var WebhookEventSchema = external_exports.enum([
   "task_run.failed",
   "task_run.cancelled",
   "member.invited",
-  "member.joined"
+  "member.joined",
+  "plan.approved",
+  "plan.rejected"
 ]);
 var WebhookSchema = external_exports.object({
   id: external_exports.string().uuid(),
@@ -15999,7 +16001,7 @@ var ENTITLEMENTS = {
     baseSeats: 1,
     maxProjects: 1,
     maxDevices: 2,
-    monthlyAiCredits: 500,
+    monthlyAiCredits: 5e3,
     allowModelSelection: false,
     cloudAgentRuns: false,
     maxConcurrentCloudRuns: 0
@@ -16016,7 +16018,7 @@ var ENTITLEMENTS = {
     baseSeats: 1,
     maxProjects: 3,
     maxDevices: 5,
-    monthlyAiCredits: 5e3,
+    monthlyAiCredits: 5e4,
     allowModelSelection: false,
     cloudAgentRuns: true,
     maxConcurrentCloudRuns: 1
@@ -16033,7 +16035,7 @@ var ENTITLEMENTS = {
     baseSeats: 1,
     maxProjects: 50,
     maxDevices: null,
-    monthlyAiCredits: 2e4,
+    monthlyAiCredits: 25e4,
     allowModelSelection: true,
     cloudAgentRuns: true,
     maxConcurrentCloudRuns: 3
@@ -16099,7 +16101,7 @@ var commonEnvSchema = {
 // ../../packages/core/dist/error-codes.js
 var ERROR_CODES = {
   // Database / consistency
-  ERR_DB_001: "A database error occurred.",
+  ERR_DB_001: "Something went wrong.",
   // Conflicts
   ERR_CONFLICT_001: "This resource already exists.",
   // Repository / GitHub
@@ -17186,6 +17188,10 @@ var WebhookService = class {
         return `\u{1F4E8} Member Invited: ${data.email || ""}`;
       case "member.joined":
         return `\u{1F44B} Member Joined: ${data.email || ""}`;
+      case "plan.approved":
+        return `\u2705 Plan Approved: ${data.title || "Unnamed Plan"}`;
+      case "plan.rejected":
+        return `\u274C Plan Rejected: ${data.title || "Unnamed Plan"}`;
       default:
         return `VEM Event: ${event}`;
     }
@@ -17235,6 +17241,12 @@ var WebhookService = class {
       case "member.invited":
         return 16347926;
       // Orange
+      case "plan.approved":
+        return 1096065;
+      // Emerald
+      case "plan.rejected":
+        return 15680580;
+      // Red
       default:
         return 7041664;
     }
@@ -17271,6 +17283,15 @@ ${payload.data.task_id}`
           type: "mrkdwn",
           text: `*Status:*
 ${payload.data.status}`
+        });
+      }
+    }
+    if (payload.event.startsWith("plan.")) {
+      if (payload.data.plan_id) {
+        fields.push({
+          type: "mrkdwn",
+          text: `*Plan ID:*
+${String(payload.data.plan_id).slice(0, 8)}`
         });
       }
     }
@@ -17351,6 +17372,15 @@ ${payload.data.status}`
         fields.push({
           name: "Git Hash",
           value: `\`${String(payload.data.git_hash).slice(0, 7)}\``,
+          inline: true
+        });
+      }
+    }
+    if (payload.event.startsWith("plan.")) {
+      if (payload.data.plan_id) {
+        fields.push({
+          name: "Plan ID",
+          value: String(payload.data.plan_id).slice(0, 8),
           inline: true
         });
       }
@@ -17614,4 +17644,4 @@ export {
   WebhookService,
   WorkflowGuideService
 };
-//# sourceMappingURL=chunk-YKKEIVHB.js.map
+//# sourceMappingURL=chunk-DDOAWZUR.js.map
