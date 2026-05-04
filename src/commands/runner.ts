@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { arch, homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { ConfigService } from "@vem/core";
 import chalk from "chalk";
@@ -186,7 +187,12 @@ function checkDockerAvailable(): void {
 	}
 }
 
-const SANDBOX_IMAGE_NAME = "vem-sandbox:v2";
+const SANDBOX_IMAGE_NAME = "vem-sandbox:v3";
+
+/** Returns the Docker platform string matching the current host architecture. */
+function getHostDockerPlatform(): string {
+	return arch() === "arm64" ? "linux/arm64" : "linux/amd64";
+}
 
 function getSandboxImageDir(): string {
 	// Dockerfile.sandbox lives in apps/cli/ — resolve relative to this dist file.
@@ -216,11 +222,25 @@ function getSandboxImageDir(): string {
 }
 
 function buildSandboxImage(): void {
-	console.log(chalk.cyan("  Building sandbox Docker image (first use)..."));
+	const platform = getHostDockerPlatform();
+	console.log(
+		chalk.cyan(
+			`  Building sandbox Docker image for ${platform} (first use)...`,
+		),
+	);
 	const contextDir = getSandboxImageDir();
 	execFileSync(
 		"docker",
-		["build", "-t", SANDBOX_IMAGE_NAME, "-f", "Dockerfile.sandbox", "."],
+		[
+			"build",
+			"--platform",
+			platform,
+			"-t",
+			SANDBOX_IMAGE_NAME,
+			"-f",
+			"Dockerfile.sandbox",
+			".",
+		],
 		{ cwd: contextDir, stdio: "inherit" },
 	);
 	console.log(chalk.green("  ✓ Sandbox image built."));
@@ -403,7 +423,28 @@ function prepareTaskBranch(
 	} catch {
 		checkoutRef = baseBranch;
 	}
-	const baseHash = runGit(["rev-parse", checkoutRef]);
+	// The plan branch may not exist locally or remotely yet (e.g. first run on a
+	// new shared plan branch). Fall back to main/master so we can still proceed.
+	let baseHash: string;
+	try {
+		baseHash = runGit(["rev-parse", checkoutRef]);
+	} catch {
+		const fallback = ["main", "master"].find((b) => {
+			try {
+				runGit(["rev-parse", "--verify", b]);
+				return true;
+			} catch {
+				return false;
+			}
+		});
+		if (!fallback) {
+			throw new Error(
+				`Cannot resolve base commit: ref '${checkoutRef}' not found locally or remotely`,
+			);
+		}
+		checkoutRef = fallback;
+		baseHash = runGit(["rev-parse", fallback]);
+	}
 	if (reuseExistingBranch) {
 		// Iterative run: check out the existing branch without creating a new one.
 		// New commits will land on the existing PR branch and the PR auto-updates.
@@ -965,11 +1006,41 @@ async function executeClaimedRunInSandbox(input: {
 		// Get real remote URL to set in the clone (so the agent can push to GitHub)
 		const remoteUrl = remote.url;
 
-		// Get base hash for detecting new commits later
+		// Get base hash for detecting new commits later.
+		// For brand-new plan branches that don't exist yet, fall back to
+		// main/master HEAD so agent commits can still be detected.
 		try {
 			baseHash = runGit(["rev-parse", `${remote.name}/${baseBranch}`]);
 		} catch {
-			baseHash = runGit(["rev-parse", baseBranch]);
+			try {
+				baseHash = runGit(["rev-parse", baseBranch]);
+			} catch {
+				// Branch doesn't exist yet — use default branch as base
+				const defaultBase = ["main", "master"].find((b) => {
+					try {
+						runGit(["rev-parse", "--verify", `${remote.name}/${b}`]);
+						return true;
+					} catch {
+						try {
+							runGit(["rev-parse", "--verify", b]);
+							return true;
+						} catch {
+							return false;
+						}
+					}
+				});
+				if (defaultBase) {
+					try {
+						baseHash = runGit(["rev-parse", `${remote.name}/${defaultBase}`]);
+					} catch {
+						try {
+							baseHash = runGit(["rev-parse", defaultBase]);
+						} catch {
+							// leave as null
+						}
+					}
+				}
+			}
 		}
 
 		// Ensure baseBranch exists as a local branch for the file:// clone.
@@ -990,7 +1061,43 @@ async function executeClaimedRunInSandbox(input: {
 			try {
 				runGit(["branch", baseBranch, `${remote.name}/${baseBranch}`]);
 			} catch {
-				// Remote ref not found either — let clone fail with a clear error.
+				// Remote ref not found either — for plan branches, fall back to
+				// creating from the project default branch so the clone can proceed.
+				// The runner will push the new branch on first commit.
+				if (run.reuse_existing_branch) {
+					const defaultBase = ["main", "master"].find((b) => {
+						try {
+							runGit(["rev-parse", "--verify", `refs/heads/${b}`]);
+							return true;
+						} catch {
+							try {
+								runGit(["rev-parse", "--verify", `${remote.name}/${b}`]);
+								return true;
+							} catch {
+								return false;
+							}
+						}
+					});
+					if (defaultBase) {
+						try {
+							const baseRef = (() => {
+								try {
+									runGit([
+										"rev-parse",
+										"--verify",
+										`${remote.name}/${defaultBase}`,
+									]);
+									return `${remote.name}/${defaultBase}`;
+								} catch {
+									return defaultBase;
+								}
+							})();
+							runGit(["branch", baseBranch, baseRef]);
+						} catch {
+							// Let clone fail with a clear error.
+						}
+					}
+				}
 			}
 		}
 
@@ -1053,6 +1160,20 @@ async function executeClaimedRunInSandbox(input: {
 		);
 
 		containerName = `vem-run-${run.id.slice(0, 8)}-${Date.now().toString(36)}`;
+
+		// Prepare ~/.vem-cache dirs for language runtime caching
+		const vemCacheDir = resolve(homedir(), ".vem-cache");
+		const rustupCache = resolve(vemCacheDir, "rustup");
+		const cargoCache = resolve(vemCacheDir, "cargo");
+		const goCache = resolve(vemCacheDir, "go");
+		for (const dir of [rustupCache, cargoCache, goCache]) {
+			try {
+				mkdirSync(dir, { recursive: true });
+			} catch {
+				// best-effort; won't fail the run
+			}
+		}
+
 		const dockerArgs = [
 			"run",
 			"--rm",
@@ -1064,6 +1185,21 @@ async function executeClaimedRunInSandbox(input: {
 			"2",
 			"-v",
 			`${worktreePath}:/workspace`,
+			// Language runtime caches — avoid re-downloading on each task
+			"-v",
+			`${rustupCache}:/usr/local/rustup`,
+			"-v",
+			`${cargoCache}:/usr/local/cargo`,
+			"-v",
+			`${goCache}:/usr/local/go`,
+			"-e",
+			"RUSTUP_HOME=/usr/local/rustup",
+			"-e",
+			"CARGO_HOME=/usr/local/cargo",
+			"-e",
+			"GO_CACHE=/usr/local/go",
+			"-e",
+			`PATH=/usr/local/cargo/bin:/usr/local/go/bin:${process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}`,
 			"-w",
 			"/workspace",
 			...envArgs,
@@ -1548,7 +1684,7 @@ export function registerRunnerCommands(program: Command) {
 			"Agent command to launch for claimed tasks",
 			"copilot",
 		)
-		.option("--poll-interval <seconds>", "Polling interval in seconds", "10")
+		.option("--poll-interval <seconds>", "Polling interval in seconds", "3")
 		.option("--once", "Claim at most one run and then exit")
 		.option(
 			"--unsafe",

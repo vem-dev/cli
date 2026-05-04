@@ -1167,7 +1167,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
       await updateTaskMetaRemote(configService, activeTask, {
         raw_vem_update: JSON.parse(JSON.stringify(update)),
-        cli_version: "0.1.72",
+        cli_version: "0.1.74",
         ...changelogEntry ? { changelog_entry: changelogEntry } : {}
       });
     }
@@ -1224,7 +1224,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
       ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
       raw_vem_update: JSON.parse(JSON.stringify(update)),
-      cli_version: "0.1.72",
+      cli_version: "0.1.74",
       // Task memory fields — stored in task_memory_entries on the API side.
       ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
       changelog_entry: changelogReasoning ?? null
@@ -4285,6 +4285,267 @@ function registerPlanCommands(program2) {
       chalk12.gray(`Status: ${plan.status}  \xB7  Source: ${plan.source}`)
     );
   });
+  planCmd.command("run-tasks <plan-id>").description(
+    "Queue all linked tasks from a plan for agent execution (shared PR branch)"
+  ).option(
+    "--backend <backend>",
+    "Execution backend (local_sandbox, local_runner, sandbox_job)",
+    "local_sandbox"
+  ).option("--yes", "Skip confirmation prompt").action(async (planId, opts) => {
+    await trackCommandUsage("plan:run-tasks");
+    const apiKey = await tryAuthenticatedKey(configService);
+    if (!apiKey) {
+      console.error(chalk12.red("Not authenticated. Run `vem login` first."));
+      process.exit(1);
+    }
+    const projectId = await configService.getProjectId();
+    if (!projectId) {
+      console.error(
+        chalk12.red("No project configured. Run `vem setup` first.")
+      );
+      process.exit(1);
+    }
+    const validBackends = ["local_sandbox", "local_runner", "sandbox_job"];
+    if (!validBackends.includes(opts.backend)) {
+      console.error(
+        chalk12.red(
+          `Invalid backend: ${opts.backend}. Use one of: ${validBackends.join(", ")}`
+        )
+      );
+      process.exit(1);
+    }
+    const deviceHeaders = await buildDeviceHeaders(configService);
+    let plan;
+    try {
+      const res = await fetch(`${API_URL}/project-plans/${planId}`, {
+        headers: { Authorization: `Bearer ${apiKey}`, ...deviceHeaders }
+      });
+      if (!res.ok) {
+        const data2 = await res.json().catch(() => ({}));
+        throw new Error(
+          data2.error ?? `HTTP ${res.status}`
+        );
+      }
+      const data = await res.json();
+      plan = data.plan;
+    } catch (err) {
+      console.error(
+        chalk12.red(
+          `Failed to fetch plan: ${err instanceof Error ? err.message : err}`
+        )
+      );
+      process.exit(1);
+    }
+    if (plan.status !== "approved") {
+      console.error(
+        chalk12.red(
+          `Plan is not approved (status: ${plan.status}). Only approved plans can have tasks run.`
+        )
+      );
+      process.exit(1);
+    }
+    console.log(chalk12.bold(`
+${plan.title}`));
+    console.log(chalk12.gray(`Plan ID: ${plan.id}`));
+    if (plan.plan_branch_name) {
+      console.log(chalk12.cyan(`Shared branch: ${plan.plan_branch_name}`));
+    } else {
+      console.log(
+        chalk12.cyan("A shared branch will be created for all task runs.")
+      );
+    }
+    console.log(chalk12.gray(`Backend: ${opts.backend}
+`));
+    if (!opts.yes) {
+      const { default: readline } = await import("readline");
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+      const confirmed = await new Promise((resolve3) => {
+        rl.question(
+          chalk12.yellow("Queue all linked tasks for agent execution? (y/N) "),
+          (answer) => {
+            rl.close();
+            resolve3(answer.trim().toLowerCase() === "y");
+          }
+        );
+      });
+      if (!confirmed) {
+        console.log(chalk12.gray("Cancelled."));
+        process.exit(0);
+      }
+    }
+    let result;
+    try {
+      const res = await fetch(
+        `${API_URL}/project-plans/${planId}/run-tasks`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+            ...deviceHeaders
+          },
+          body: JSON.stringify({ execution_backend: opts.backend })
+        }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.error ?? `HTTP ${res.status}`
+        );
+      }
+      result = await res.json();
+    } catch (err) {
+      console.error(
+        chalk12.red(
+          `Failed to queue tasks: ${err instanceof Error ? err.message : err}`
+        )
+      );
+      process.exit(1);
+    }
+    if (result.queued > 0) {
+      console.log(
+        chalk12.green(
+          `\u2713 Queued ${result.queued} task${result.queued !== 1 ? "s" : ""} for agent execution`
+        )
+      );
+    }
+    if (result.skipped > 0) {
+      console.log(
+        chalk12.gray(
+          `  ${result.skipped} task${result.skipped !== 1 ? "s" : ""} skipped (already running or done)`
+        )
+      );
+    }
+    if (result.plan_branch_name) {
+      console.log(chalk12.cyan(`  Shared branch: ${result.plan_branch_name}`));
+    }
+    if (result.warning) {
+      console.log(chalk12.yellow(`  \u26A0 ${result.warning}`));
+    }
+    if (result.errors.length > 0) {
+      console.log(chalk12.red(`  ${result.errors.length} error(s):`));
+      for (const e of result.errors) {
+        console.log(chalk12.red(`    - ${e}`));
+      }
+    }
+  });
+  planCmd.command("cancel-tasks <plan-id>").description(
+    "Cancel all active task runs for a plan, optionally deleting the shared branch"
+  ).option("--delete-branch", "Also delete the shared GitHub PR branch").option("--yes", "Skip confirmation prompt").action(async (planId, opts) => {
+    await trackCommandUsage("plan:cancel-tasks");
+    const apiKey = await tryAuthenticatedKey(configService);
+    if (!apiKey) {
+      console.error(chalk12.red("Not authenticated. Run `vem login` first."));
+      process.exit(1);
+    }
+    const projectId = await configService.getProjectId();
+    if (!projectId) {
+      console.error(
+        chalk12.red("No project configured. Run `vem setup` first.")
+      );
+      process.exit(1);
+    }
+    const deviceHeaders = await buildDeviceHeaders(configService);
+    let plan;
+    try {
+      const res = await fetch(`${API_URL}/project-plans/${planId}`, {
+        headers: { Authorization: `Bearer ${apiKey}`, ...deviceHeaders }
+      });
+      if (!res.ok) {
+        const data2 = await res.json().catch(() => ({}));
+        throw new Error(
+          data2.error ?? `HTTP ${res.status}`
+        );
+      }
+      const data = await res.json();
+      plan = data.plan;
+    } catch (err) {
+      console.error(
+        chalk12.red(
+          `Failed to fetch plan: ${err instanceof Error ? err.message : err}`
+        )
+      );
+      process.exit(1);
+    }
+    console.log(chalk12.bold(`
+${plan.title}`));
+    console.log(chalk12.gray(`Plan ID: ${plan.id}`));
+    if (plan.plan_branch_name) {
+      console.log(chalk12.gray(`Shared branch: ${plan.plan_branch_name}`));
+    }
+    if (opts.deleteBranch && !plan.plan_branch_name) {
+      console.log(chalk12.yellow("  \u26A0 No shared branch found on this plan."));
+    }
+    console.log();
+    if (!opts.yes) {
+      const { default: readline } = await import("readline");
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+      const prompt = opts.deleteBranch ? chalk12.yellow(
+        "Cancel all active runs AND delete the shared branch? (y/N) "
+      ) : chalk12.yellow("Cancel all active task runs for this plan? (y/N) ");
+      const confirmed = await new Promise((resolve3) => {
+        rl.question(prompt, (answer) => {
+          rl.close();
+          resolve3(answer.trim().toLowerCase() === "y");
+        });
+      });
+      if (!confirmed) {
+        console.log(chalk12.gray("Cancelled."));
+        process.exit(0);
+      }
+    }
+    let result;
+    try {
+      const res = await fetch(
+        `${API_URL}/project-plans/${planId}/cancel-tasks`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+            ...deviceHeaders
+          },
+          body: JSON.stringify({ delete_branch: opts.deleteBranch ?? false })
+        }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.error ?? `HTTP ${res.status}`
+        );
+      }
+      result = await res.json();
+    } catch (err) {
+      console.error(
+        chalk12.red(`Failed: ${err instanceof Error ? err.message : err}`)
+      );
+      process.exit(1);
+    }
+    if (result.cancelled > 0) {
+      console.log(
+        chalk12.green(
+          `\u2713 ${result.cancelled} task run${result.cancelled !== 1 ? "s" : ""} cancelled`
+        )
+      );
+    } else {
+      console.log(chalk12.gray(result.message));
+    }
+    if (result.branch_deleted) {
+      console.log(chalk12.red("  Shared branch deleted"));
+    }
+    if (result.errors.length > 0) {
+      console.log(chalk12.red(`  ${result.errors.length} error(s):`));
+      for (const e of result.errors) {
+        console.log(chalk12.red(`    - ${e}`));
+      }
+    }
+  });
 }
 
 // src/commands/project.ts
@@ -4770,7 +5031,8 @@ function registerProjectCommands(program2) {
 // src/commands/runner.ts
 import { execFileSync, spawn as spawn3 } from "child_process";
 import { randomUUID } from "crypto";
-import { existsSync, realpathSync } from "fs";
+import { existsSync, mkdirSync, realpathSync } from "fs";
+import { arch, homedir } from "os";
 import { dirname as dirname2, resolve as resolve2 } from "path";
 import chalk14 from "chalk";
 function sleep(ms) {
@@ -4895,7 +5157,10 @@ function checkDockerAvailable() {
     process.exit(1);
   }
 }
-var SANDBOX_IMAGE_NAME = "vem-sandbox:v2";
+var SANDBOX_IMAGE_NAME = "vem-sandbox:v3";
+function getHostDockerPlatform() {
+  return arch() === "arm64" ? "linux/arm64" : "linux/amd64";
+}
 function getSandboxImageDir() {
   let cliDist = getCliEntrypoint();
   try {
@@ -4918,11 +5183,25 @@ function getSandboxImageDir() {
   );
 }
 function buildSandboxImage() {
-  console.log(chalk14.cyan("  Building sandbox Docker image (first use)..."));
+  const platform = getHostDockerPlatform();
+  console.log(
+    chalk14.cyan(
+      `  Building sandbox Docker image for ${platform} (first use)...`
+    )
+  );
   const contextDir = getSandboxImageDir();
   execFileSync(
     "docker",
-    ["build", "-t", SANDBOX_IMAGE_NAME, "-f", "Dockerfile.sandbox", "."],
+    [
+      "build",
+      "--platform",
+      platform,
+      "-t",
+      SANDBOX_IMAGE_NAME,
+      "-f",
+      "Dockerfile.sandbox",
+      "."
+    ],
     { cwd: contextDir, stdio: "inherit" }
   );
   console.log(chalk14.green("  \u2713 Sandbox image built."));
@@ -5060,7 +5339,26 @@ function prepareTaskBranch(taskExternalId, baseBranch, remoteName, reuseExisting
   } catch {
     checkoutRef = baseBranch;
   }
-  const baseHash = runGit(["rev-parse", checkoutRef]);
+  let baseHash;
+  try {
+    baseHash = runGit(["rev-parse", checkoutRef]);
+  } catch {
+    const fallback = ["main", "master"].find((b) => {
+      try {
+        runGit(["rev-parse", "--verify", b]);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (!fallback) {
+      throw new Error(
+        `Cannot resolve base commit: ref '${checkoutRef}' not found locally or remotely`
+      );
+    }
+    checkoutRef = fallback;
+    baseHash = runGit(["rev-parse", fallback]);
+  }
   if (reuseExistingBranch) {
     runGit(["checkout", baseBranch]);
     return { baseHash, branchName: baseBranch, checkoutRef };
@@ -5488,7 +5786,33 @@ async function executeClaimedRunInSandbox(input) {
     try {
       baseHash = runGit(["rev-parse", `${remote.name}/${baseBranch}`]);
     } catch {
-      baseHash = runGit(["rev-parse", baseBranch]);
+      try {
+        baseHash = runGit(["rev-parse", baseBranch]);
+      } catch {
+        const defaultBase = ["main", "master"].find((b) => {
+          try {
+            runGit(["rev-parse", "--verify", `${remote.name}/${b}`]);
+            return true;
+          } catch {
+            try {
+              runGit(["rev-parse", "--verify", b]);
+              return true;
+            } catch {
+              return false;
+            }
+          }
+        });
+        if (defaultBase) {
+          try {
+            baseHash = runGit(["rev-parse", `${remote.name}/${defaultBase}`]);
+          } catch {
+            try {
+              baseHash = runGit(["rev-parse", defaultBase]);
+            } catch {
+            }
+          }
+        }
+      }
     }
     const localBranchExists = (() => {
       try {
@@ -5502,6 +5826,39 @@ async function executeClaimedRunInSandbox(input) {
       try {
         runGit(["branch", baseBranch, `${remote.name}/${baseBranch}`]);
       } catch {
+        if (run.reuse_existing_branch) {
+          const defaultBase = ["main", "master"].find((b) => {
+            try {
+              runGit(["rev-parse", "--verify", `refs/heads/${b}`]);
+              return true;
+            } catch {
+              try {
+                runGit(["rev-parse", "--verify", `${remote.name}/${b}`]);
+                return true;
+              } catch {
+                return false;
+              }
+            }
+          });
+          if (defaultBase) {
+            try {
+              const baseRef = (() => {
+                try {
+                  runGit([
+                    "rev-parse",
+                    "--verify",
+                    `${remote.name}/${defaultBase}`
+                  ]);
+                  return `${remote.name}/${defaultBase}`;
+                } catch {
+                  return defaultBase;
+                }
+              })();
+              runGit(["branch", baseBranch, baseRef]);
+            } catch {
+            }
+          }
+        }
       }
     }
     if (existsSync(worktreePath)) {
@@ -5550,6 +5907,16 @@ async function executeClaimedRunInSandbox(input) {
       `VEM_RUN_MODE=${run.run_mode || "implement"}`
     );
     containerName = `vem-run-${run.id.slice(0, 8)}-${Date.now().toString(36)}`;
+    const vemCacheDir = resolve2(homedir(), ".vem-cache");
+    const rustupCache = resolve2(vemCacheDir, "rustup");
+    const cargoCache = resolve2(vemCacheDir, "cargo");
+    const goCache = resolve2(vemCacheDir, "go");
+    for (const dir of [rustupCache, cargoCache, goCache]) {
+      try {
+        mkdirSync(dir, { recursive: true });
+      } catch {
+      }
+    }
     const dockerArgs = [
       "run",
       "--rm",
@@ -5561,6 +5928,21 @@ async function executeClaimedRunInSandbox(input) {
       "2",
       "-v",
       `${worktreePath}:/workspace`,
+      // Language runtime caches — avoid re-downloading on each task
+      "-v",
+      `${rustupCache}:/usr/local/rustup`,
+      "-v",
+      `${cargoCache}:/usr/local/cargo`,
+      "-v",
+      `${goCache}:/usr/local/go`,
+      "-e",
+      "RUSTUP_HOME=/usr/local/rustup",
+      "-e",
+      "CARGO_HOME=/usr/local/cargo",
+      "-e",
+      "GO_CACHE=/usr/local/go",
+      "-e",
+      `PATH=/usr/local/cargo/bin:/usr/local/go/bin:${process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}`,
       "-w",
       "/workspace",
       ...envArgs,
@@ -5950,7 +6332,7 @@ function registerRunnerCommands(program2) {
     "--agent <command>",
     "Agent command to launch for claimed tasks",
     "copilot"
-  ).option("--poll-interval <seconds>", "Polling interval in seconds", "10").option("--once", "Claim at most one run and then exit").option(
+  ).option("--poll-interval <seconds>", "Polling interval in seconds", "3").option("--once", "Claim at most one run and then exit").option(
     "--unsafe",
     "Disable Docker sandbox (run agent directly on host \u2014 no isolation)"
   ).action(async (options, command) => {
@@ -10104,11 +10486,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.72",
+  release: "0.1.74",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.72").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.74").addHelpText(
   "after",
   `
 ${chalk20.bold("\n\u26A1 Power Workflows:")}
