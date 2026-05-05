@@ -13891,6 +13891,7 @@ var TaskSchema = external_exports.object({
   estimate_hours: external_exports.number().optional(),
   depends_on: external_exports.array(external_exports.string()).optional(),
   blocked_by: external_exports.array(external_exports.string()).optional(),
+  blocked_reason: external_exports.string().optional(),
   recurrence_rule: external_exports.string().optional(),
   owner_id: external_exports.string().optional(),
   reviewer_id: external_exports.string().optional(),
@@ -13933,6 +13934,7 @@ var TaskUpdateSchema = external_exports.object({
   estimate_hours: external_exports.number().optional(),
   depends_on: external_exports.array(external_exports.string()).optional(),
   blocked_by: external_exports.array(external_exports.string()).optional(),
+  blocked_reason: external_exports.string().optional(),
   recurrence_rule: external_exports.string().optional(),
   owner_id: external_exports.string().optional(),
   reviewer_id: external_exports.string().optional(),
@@ -13964,6 +13966,7 @@ var TaskCreateSchema = external_exports.object({
   estimate_hours: external_exports.number().optional(),
   depends_on: external_exports.array(external_exports.string()).optional(),
   blocked_by: external_exports.array(external_exports.string()).optional(),
+  blocked_reason: external_exports.string().optional(),
   recurrence_rule: external_exports.string().optional(),
   owner_id: external_exports.string().optional(),
   reviewer_id: external_exports.string().optional(),
@@ -14748,6 +14751,7 @@ var TaskService = class {
       estimate_hours: options?.estimate_hours,
       depends_on: options?.depends_on,
       blocked_by: options?.blocked_by,
+      blocked_reason: options?.blocked_reason,
       recurrence_rule: options?.recurrence_rule,
       owner_id: options?.owner_id,
       reviewer_id: options?.reviewer_id,
@@ -14821,6 +14825,8 @@ var TaskService = class {
     const nextEstimate = taskPatch.estimate_hours ?? currentTask.estimate_hours;
     const nextDependsOn = dependsProvided ? normalizeStringArray(taskPatch.depends_on) ?? [] : currentTask.depends_on;
     const nextBlockedBy = blockedProvided ? normalizeStringArray(taskPatch.blocked_by) ?? [] : currentTask.blocked_by;
+    const blockedReasonProvided = hasOwn("blocked_reason");
+    const nextBlockedReason = blockedReasonProvided ? normalizeText(taskPatch.blocked_reason) : currentTask.blocked_reason;
     const nextRecurrence = taskPatch.recurrence_rule ?? currentTask.recurrence_rule;
     const nextOwner = taskPatch.owner_id ?? currentTask.owner_id;
     const nextReviewer = taskPatch.reviewer_id ?? currentTask.reviewer_id;
@@ -14858,6 +14864,9 @@ ${newCtx}`;
       effectiveStatus = "blocked";
     } else if (!statusProvided && currentTask.status === "blocked") {
       effectiveStatus = "todo";
+    }
+    if (statusProvided && effectiveStatus === "blocked" && !hasBlocking && !nextBlockedReason) {
+      throw new Error("blocked_reason is required when setting a task status to blocked.");
     }
     if (effectiveStatus === "done" && currentTask.status !== "done") {
       if (!taskPatch.reasoning) {
@@ -14999,6 +15008,7 @@ ${newCtx}`;
       estimate_hours: nextEstimate,
       depends_on: nextDependsOn,
       blocked_by: nextBlockedBy,
+      blocked_reason: effectiveStatus === "blocked" ? nextBlockedReason : void 0,
       recurrence_rule: nextRecurrence,
       owner_id: nextOwner,
       reviewer_id: nextReviewer,
@@ -16798,7 +16808,6 @@ import { join } from "path";
 import fs11 from "fs-extra";
 var UsageMetricsService = class _UsageMetricsService {
   metricsPath = null;
-  baseDir;
   /**
    * Power score weights for various features
    */
@@ -16814,7 +16823,6 @@ var UsageMetricsService = class _UsageMetricsService {
   static DEFAULT_SYNC_INTERVAL_MS = 5 * 60 * 1e3;
   static DEFAULT_SYNC_TIMEOUT_MS = 7e3;
   constructor(baseDir) {
-    this.baseDir = baseDir;
     if (baseDir) {
       this.metricsPath = join(baseDir, ".usage-metrics.json");
     }
@@ -17092,7 +17100,7 @@ async function resolveAndValidateWebhookHostname(hostname4) {
     ]);
     resolvedAddresses = result;
   } catch (err) {
-    throw new Error(`Webhook URL DNS lookup failed: ${err.message}`);
+    throw new Error(`Webhook URL DNS lookup failed: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!Array.isArray(resolvedAddresses) || resolvedAddresses.length === 0) {
     throw new Error("Webhook URL DNS lookup failed: no addresses resolved");
@@ -17418,7 +17426,7 @@ ${String(payload.data.plan_id).slice(0, 8)}`
       return {
         webhook_id: webhook.id,
         success: false,
-        error_message: urlErr.message
+        error_message: urlErr instanceof Error ? urlErr.message : String(urlErr)
       };
     }
     try {
@@ -17644,4 +17652,4 @@ export {
   WebhookService,
   WorkflowGuideService
 };
-//# sourceMappingURL=chunk-DDOAWZUR.js.map
+//# sourceMappingURL=chunk-VYWRLRNX.js.map

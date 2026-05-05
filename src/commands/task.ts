@@ -359,6 +359,7 @@ export function registerTaskCommands(program: Command) {
 			estimate_hours?: number;
 			depends_on?: string[];
 			blocked_by?: string[];
+			blocked_reason?: string | null;
 			recurrence_rule?: string;
 			owner_id?: string;
 			reviewer_id?: string;
@@ -408,6 +409,9 @@ export function registerTaskCommands(program: Command) {
 			}
 			if (patch.depends_on !== undefined) payload.depends_on = patch.depends_on;
 			if (patch.blocked_by !== undefined) payload.blocked_by = patch.blocked_by;
+			if (patch.blocked_reason !== undefined) {
+				payload.blocked_reason = patch.blocked_reason;
+			}
 			if (patch.recurrence_rule !== undefined) {
 				payload.recurrence_rule = patch.recurrence_rule;
 			}
@@ -2281,6 +2285,7 @@ export function registerTaskCommands(program: Command) {
 				const remoteUpdated = await updateRemoteTaskMeta(id, {
 					status: "blocked",
 					blocked_by: blockedBy,
+					blocked_reason: options.reasoning,
 					reasoning: options.reasoning,
 					actor: actorName,
 				});
@@ -2288,6 +2293,7 @@ export function registerTaskCommands(program: Command) {
 					await taskService.updateTask(id, {
 						status: "blocked",
 						blocked_by: blockedBy,
+						blocked_reason: options.reasoning,
 						reasoning: options.reasoning,
 						actor: actorName,
 					});
@@ -2346,6 +2352,7 @@ export function registerTaskCommands(program: Command) {
 				const remoteUpdated = await updateRemoteTaskMeta(id, {
 					status: "todo",
 					blocked_by: [],
+					blocked_reason: null,
 					reasoning,
 					actor: actorName,
 				});

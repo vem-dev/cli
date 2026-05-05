@@ -607,7 +607,9 @@ async function executeClaimedRun(input: {
 		run,
 	} = input;
 	const repoRoot = getRepoRoot();
-	let sequence = 1;
+	// The API pre-writes sequence=1 ("Queued...") for every run, so start at 2
+	// to avoid onConflictDoNothing silently dropping the runner's first log entry.
+	let sequence = 2;
 	let heartbeatTimer: NodeJS.Timeout | null = null;
 	let cancellationRequested = false;
 	let timedOut = false;
@@ -955,7 +957,9 @@ async function executeClaimedRunInSandbox(input: {
 }) {
 	const { configService, apiKey, projectId, agent, run, credentials } = input;
 	const repoRoot = getRepoRoot();
-	let sequence = 1;
+	// The API pre-writes sequence=1 ("Queued...") for every run, so start at 2
+	// to avoid onConflictDoNothing silently dropping the runner's first log entry.
+	let sequence = 2;
 	let heartbeatTimer: NodeJS.Timeout | null = null;
 	let worktreePath: string | null = null;
 	let branchName: string | null = null;
@@ -1132,6 +1136,20 @@ async function executeClaimedRunInSandbox(input: {
 		// Fix origin URL to point at the real remote (not the local clone source)
 		if (remoteUrl) {
 			runGitIn(worktreePath, ["remote", "set-url", "origin", remoteUrl]);
+		}
+
+		// Sync clone with the real remote. This is critical for iterative plan runs:
+		// previous tasks push commits to the remote, but the local file:// clone source
+		// may not include them. Without this sync, the pre-computed baseHash (from
+		// `git rev-parse remote/branch`) would reference a commit unknown to the clone,
+		// causing `rev-list baseHash..HEAD` to throw → commitHashes stays empty.
+		try {
+			runGitIn(worktreePath, ["fetch", "origin", baseBranch]);
+			runGitIn(worktreePath, ["reset", "--hard", `origin/${baseBranch}`]);
+			// Recompute baseHash from the clone's actual HEAD after sync so rev-list works
+			baseHash = runGitIn(worktreePath, ["rev-parse", "HEAD"]);
+		} catch {
+			// Fetch failed (auth, network, or branch not on remote yet); keep pre-computed baseHash
 		}
 
 		await appendRunLogs(configService, apiKey, run.id, [

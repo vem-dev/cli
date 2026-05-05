@@ -24,7 +24,7 @@ import {
   isVemInitialized,
   listAllAgentSessions,
   parseVemUpdateBlock
-} from "./chunk-DDOAWZUR.js";
+} from "./chunk-VYWRLRNX.js";
 import {
   readCopilotSessionDetail
 } from "./chunk-PO3WNPAJ.js";
@@ -1167,7 +1167,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
       await updateTaskMetaRemote(configService, activeTask, {
         raw_vem_update: JSON.parse(JSON.stringify(update)),
-        cli_version: "0.1.74",
+        cli_version: "0.1.75",
         ...changelogEntry ? { changelog_entry: changelogEntry } : {}
       });
     }
@@ -1224,7 +1224,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
       ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
       raw_vem_update: JSON.parse(JSON.stringify(update)),
-      cli_version: "0.1.74",
+      cli_version: "0.1.75",
       // Task memory fields — stored in task_memory_entries on the API side.
       ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
       changelog_entry: changelogReasoning ?? null
@@ -3889,7 +3889,7 @@ function registerMaintenanceCommands(program2) {
   });
   program2.command("diff").description("Show differences between local and cloud state").option("--detailed", "Show detailed content diffs").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DiffService } = await import("./dist-VK5OTQHM.js");
+      const { DiffService } = await import("./dist-RCEQFSO2.js");
       const diffService = new DiffService();
       const result = await diffService.compareWithLastPush();
       if (options.json) {
@@ -3947,7 +3947,7 @@ ${"\u2500".repeat(50)}`));
   });
   program2.command("doctor").description("Run health checks on VEM setup").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DoctorService } = await import("./dist-VK5OTQHM.js");
+      const { DoctorService } = await import("./dist-RCEQFSO2.js");
       const doctorService = new DoctorService();
       const results = await doctorService.runAllChecks();
       if (options.json) {
@@ -5465,7 +5465,7 @@ async function executeClaimedRun(input) {
     run
   } = input;
   const repoRoot = getRepoRoot3();
-  let sequence = 1;
+  let sequence = 2;
   let heartbeatTimer = null;
   let cancellationRequested = false;
   let timedOut = false;
@@ -5749,7 +5749,7 @@ ${run.user_prompt.trim()}` : "Triggered from VEM web.",
 async function executeClaimedRunInSandbox(input) {
   const { configService, apiKey, projectId, agent, run, credentials } = input;
   const repoRoot = getRepoRoot3();
-  let sequence = 1;
+  let sequence = 2;
   let heartbeatTimer = null;
   let worktreePath = null;
   let branchName = null;
@@ -5883,6 +5883,12 @@ async function executeClaimedRunInSandbox(input) {
     }
     if (remoteUrl) {
       runGitIn(worktreePath, ["remote", "set-url", "origin", remoteUrl]);
+    }
+    try {
+      runGitIn(worktreePath, ["fetch", "origin", baseBranch]);
+      runGitIn(worktreePath, ["reset", "--hard", `origin/${baseBranch}`]);
+      baseHash = runGitIn(worktreePath, ["rev-parse", "HEAD"]);
+    } catch {
     }
     await appendRunLogs(configService, apiKey, run.id, [
       {
@@ -8421,6 +8427,9 @@ function registerTaskCommands(program2) {
       }
       if (patch.depends_on !== void 0) payload.depends_on = patch.depends_on;
       if (patch.blocked_by !== void 0) payload.blocked_by = patch.blocked_by;
+      if (patch.blocked_reason !== void 0) {
+        payload.blocked_reason = patch.blocked_reason;
+      }
       if (patch.recurrence_rule !== void 0) {
         payload.recurrence_rule = patch.recurrence_rule;
       }
@@ -9883,6 +9892,7 @@ ${currentSummary}
       const remoteUpdated = await updateRemoteTaskMeta(id, {
         status: "blocked",
         blocked_by: blockedBy,
+        blocked_reason: options.reasoning,
         reasoning: options.reasoning,
         actor: actorName
       });
@@ -9890,6 +9900,7 @@ ${currentSummary}
         await taskService.updateTask(id, {
           status: "blocked",
           blocked_by: blockedBy,
+          blocked_reason: options.reasoning,
           reasoning: options.reasoning,
           actor: actorName
         });
@@ -9941,6 +9952,7 @@ ${currentSummary}
       const remoteUpdated = await updateRemoteTaskMeta(id, {
         status: "todo",
         blocked_by: [],
+        blocked_reason: null,
         reasoning,
         actor: actorName
       });
@@ -10486,11 +10498,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.74",
+  release: "0.1.75",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.74").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.75").addHelpText(
   "after",
   `
 ${chalk20.bold("\n\u26A1 Power Workflows:")}
