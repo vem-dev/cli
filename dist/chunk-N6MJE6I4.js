@@ -15998,6 +15998,11 @@ var DoctorService = class {
 // ../../packages/core/dist/entitlements.js
 var SUBSCRIPTION_TIERS = ["free", "pro", "ultra"];
 var DEFAULT_TIER = "free";
+var NEW_PROJECT_HISTORY_RETENTION_DAYS = {
+  free: 7,
+  pro: 30,
+  ultra: 90
+};
 var ENTITLEMENTS = {
   free: {
     tier: "free",
@@ -16038,7 +16043,7 @@ var ENTITLEMENTS = {
     label: "Ultra",
     allowInvites: true,
     personalOnly: false,
-    historyDays: 365,
+    historyDays: 90,
     embeddings: true,
     advancedRepoHistoryAnalysis: true,
     webhooks: true,
@@ -16068,6 +16073,9 @@ function resolveSubscriptionTier(source) {
 }
 function getEntitlements(tier) {
   return ENTITLEMENTS[tier];
+}
+function getNewProjectHistoryRetentionDays(tier) {
+  return NEW_PROJECT_HISTORY_RETENTION_DAYS[tier];
 }
 function resolveSeatLimit(tier, quantity) {
   if (tier === "free") {
@@ -16104,8 +16112,21 @@ function validateEnv(schema, serviceName) {
 }
 var commonEnvSchema = {
   NODE_ENV: external_exports.enum(["development", "production", "test"]).default("development"),
-  INTERNAL_API_SECRET: external_exports.string().min(1, "INTERNAL_API_SECRET is required"),
-  DATABASE_URL: external_exports.string().url("DATABASE_URL must be a valid URL")
+  VEM_INTERNAL_SECRET: external_exports.string().min(1, "VEM_INTERNAL_SECRET is required"),
+  MAIN_DATABASE_URL: external_exports.string().url("MAIN_DATABASE_URL must be a valid URL")
+};
+var githubAppEnvSchema = {
+  GH_APP_ID: external_exports.string().min(1, "GH_APP_ID is required"),
+  GH_PRIVATE_KEY: external_exports.string().min(1, "GH_PRIVATE_KEY is required"),
+  GH_APP_NAME: external_exports.string().optional(),
+  GH_WEBHOOK_SECRET: external_exports.string().optional()
+};
+var sentryEnvSchema = {
+  SENTRY_RELEASE: external_exports.string().optional()
+};
+var aiModelsEnvSchema = {
+  VEM_DEFAULT_CHAT_MODEL: external_exports.string().optional(),
+  VEM_DEFAULT_EMBEDDING_MODEL: external_exports.string().optional()
 };
 
 // ../../packages/core/dist/error-codes.js
@@ -16249,7 +16270,7 @@ function normalizeGithubPrivateKey(rawValue) {
 import pino from "pino";
 var isDev = process.env.NODE_ENV === "development";
 var logger = pino({
-  level: process.env.LOG_LEVEL || "info",
+  level: process.env.VEM_LOG_LEVEL || "info",
   // We map pino levels to Google Cloud severity levels
   formatters: {
     level(label) {
@@ -16288,9 +16309,9 @@ var ALGORITHM = "aes-256-gcm";
 var IV_BYTES = 12;
 var AUTH_TAG_BYTES = 16;
 function getEncryptionKey() {
-  const secret = process.env.PROVIDER_KEY_ENCRYPTION_SECRET;
+  const secret = process.env.VEM_PROVIDER_KEY_ENCRYPTION_SECRET;
   if (!secret || secret.length !== 64) {
-    throw new Error(`PROVIDER_KEY_ENCRYPTION_SECRET must be a 64-character hex string (32 bytes). Generate one with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`);
+    throw new Error(`VEM_PROVIDER_KEY_ENCRYPTION_SECRET must be a 64-character hex string (32 bytes). Generate one with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`);
   }
   return Buffer.from(secret, "hex");
 }
@@ -17625,13 +17646,18 @@ export {
   DoctorService,
   SUBSCRIPTION_TIERS,
   DEFAULT_TIER,
+  NEW_PROJECT_HISTORY_RETENTION_DAYS,
   normalizeTier,
   resolveSubscriptionTier,
   getEntitlements,
+  getNewProjectHistoryRetentionDays,
   resolveSeatLimit,
   getHistoryCutoff,
   validateEnv,
   commonEnvSchema,
+  githubAppEnvSchema,
+  sentryEnvSchema,
+  aiModelsEnvSchema,
   ERROR_CODES,
   sanitizeError,
   normalizeGithubPrivateKey,
@@ -17652,4 +17678,4 @@ export {
   WebhookService,
   WorkflowGuideService
 };
-//# sourceMappingURL=chunk-VYWRLRNX.js.map
+//# sourceMappingURL=chunk-N6MJE6I4.js.map

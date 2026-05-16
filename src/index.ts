@@ -14,6 +14,7 @@ import { registerRunnerCommands } from "./commands/runner.js";
 import { registerSearchCommands } from "./commands/search.js";
 import { registerSessionsCommands } from "./commands/sessions.js";
 import { registerSetupCommands } from "./commands/setup.js";
+import { registerSkillsCommands } from "./commands/skills.js";
 import { registerSyncCommands } from "./commands/sync.js";
 import { registerTaskCommands } from "./commands/task.js";
 import { initServerMonitoring, NodeSentry } from "./runtime/monitoring.js";
@@ -95,6 +96,7 @@ registerAgentCommands(program);
 registerMaintenanceCommands(program);
 registerSessionsCommands(program);
 registerInstructionCommands(program);
+registerSkillsCommands(program);
 
 await trackHelpUsageFromArgv(process.argv.slice(2));
 

@@ -3,7 +3,6 @@ declare const __VERSION__: string;
 import { execSync, spawn } from "node:child_process";
 import { access, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-
 import {
 	type ApplyVemUpdateResult,
 	applyVemUpdate,
@@ -1128,11 +1127,136 @@ export function registerAgentCommands(program: Command) {
 
 				// 2. Refresh Context
 				console.log(chalk.blue("📝 Generating context for agent..."));
+
+				// Auto-pull skills from cloud before building context, so the agent
+				// always has the latest SKILL.md files regardless of git state.
+				try {
+					const repoRoot = execSync("git rev-parse --show-toplevel", {
+						encoding: "utf-8",
+					}).trim();
+					const lockRaw = await readFile(
+						join(repoRoot, "skills-lock.json"),
+						"utf-8",
+					);
+					const lock = JSON.parse(lockRaw) as {
+						skills: Record<
+							string,
+							{ source: string; skillPath: string; sourceType: string }
+						>;
+					};
+					const skillCount = Object.keys(lock.skills ?? {}).length;
+					if (skillCount > 0) {
+						const projectId = await configService.getProjectId();
+						const apiKey = await configService.getApiKey();
+						if (projectId && apiKey) {
+							const skillsRes = await fetch(
+								`${API_URL}/projects/${projectId}/skills`,
+								{
+									headers: {
+										Authorization: `Bearer ${apiKey}`,
+										...(await buildDeviceHeaders(configService)),
+									},
+								},
+							);
+							if (skillsRes.ok) {
+								const skillsData = (await skillsRes.json()) as {
+									skills_lock: {
+										skills: Record<
+											string,
+											{ source: string; skillPath: string }
+										>;
+									};
+									skill_files: { path: string; content: string }[];
+									version_number: number | null;
+								};
+								if (skillsData.version_number && skillsData.skill_files) {
+									const { mkdir, writeFile: writeFileFs } = await import(
+										"node:fs/promises"
+									);
+									const nodePath = await import("node:path");
+									// Build skillPath → name map for legacy path remapping
+									const skillPathToName = new Map<string, string>();
+									for (const [name, skill] of Object.entries(
+										skillsData.skills_lock?.skills ?? {},
+									)) {
+										skillPathToName.set(skill.skillPath, name);
+									}
+									let pulled = 0;
+									for (const entry of skillsData.skill_files) {
+										if (
+											typeof entry.path !== "string" ||
+											!entry.content?.trim()
+										)
+											continue;
+										let localRelPath = entry.path;
+										if (!entry.path.startsWith(".agents/skills/")) {
+											const skillName = skillPathToName.get(entry.path);
+											if (skillName) {
+												localRelPath = nodePath.join(
+													".agents",
+													"skills",
+													skillName,
+													"SKILL.md",
+												);
+											}
+										}
+										const dest = nodePath.resolve(repoRoot, localRelPath);
+										const resolvedRoot = nodePath.resolve(repoRoot);
+										if (
+											!dest.startsWith(`${resolvedRoot}${nodePath.sep}`) &&
+											dest !== resolvedRoot
+										)
+											continue;
+										await mkdir(nodePath.dirname(dest), { recursive: true });
+										await writeFileFs(dest, entry.content, "utf-8");
+										pulled++;
+									}
+									if (pulled > 0) {
+										console.log(
+											chalk.gray(
+												`Skills synced from cloud (v${skillsData.version_number}, ${pulled} file(s)).`,
+											),
+										);
+									}
+								}
+							}
+						}
+					}
+				} catch {
+					// skills-lock.json absent or cloud unreachable — continue without pull
+				}
+
 				const snapshot = await syncService.packForAgent();
 				// Write project-level context snapshot (no task-specific content)
 				const vemDir = await getVemDir();
 				const contextFile = join(vemDir, "current_context.md");
-				const contextContent = formatVemPack(snapshot);
+				let contextContent = formatVemPack(snapshot);
+
+				// Append installed skills section if skills-lock.json exists
+				try {
+					const repoRoot = execSync("git rev-parse --show-toplevel", {
+						encoding: "utf-8",
+					}).trim();
+					const lockPath = join(repoRoot, "skills-lock.json");
+					const lockRaw = await readFile(lockPath, "utf-8");
+					const lock = JSON.parse(lockRaw) as {
+						skills: Record<string, { source: string; skillPath: string }>;
+					};
+					const skillEntries = Object.entries(lock.skills ?? {});
+					if (skillEntries.length > 0) {
+						const rows = skillEntries
+							.map(([n, s]) => `| \`/${n}\` | ${n} | ${s.source} |`)
+							.join("\n");
+						contextContent +=
+							`\n\n## Available Skills (Slash Commands)\n\n` +
+							`This project has ${skillEntries.length} installed skill(s). ` +
+							`Use these slash commands during the session:\n\n` +
+							`| Command | Skill | Source |\n|---------|-------|--------|\n${rows}`;
+					}
+				} catch {
+					// No skills-lock.json — that's fine
+				}
+
 				await writeFile(contextFile, contextContent);
 				console.log(chalk.gray(`Context written to ${contextFile}`));
 

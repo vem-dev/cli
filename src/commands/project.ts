@@ -6,7 +6,6 @@ import {
 	API_URL,
 	buildDeviceHeaders,
 	ensureAuthenticated,
-	getGitRemote,
 	getGitRemoteSelection,
 	installGitHook,
 	openBrowser,
@@ -110,13 +109,20 @@ export async function runInteractiveLinkFlow(
 		return a.label.localeCompare(b.label);
 	});
 
+	type RemoteSelection = { name: string; url: string } | null | "REMOVE";
+
 	const chooseProjectForWorkspace = async (
 		workspace: WorkspaceOption,
 		allowBack: boolean,
 	): Promise<
 		| { type: "cancel" }
 		| { type: "back" }
-		| { type: "selected"; projectId: string; orgId?: string }
+		| {
+				type: "selected";
+				projectId: string;
+				orgId?: string;
+				repoSelection?: RemoteSelection;
+		  }
 	> => {
 		const workspaceProjects = projects.filter(
 			(item) => item.org_id === workspace.id,
@@ -184,7 +190,13 @@ export async function runInteractiveLinkFlow(
 				return { type: "cancel" };
 			}
 
-			const repoUrl = await getGitRemote({ promptOnMultiple: true });
+			const newProjectRemoteSelection = await getGitRemoteSelection({
+				promptOnMultiple: true,
+			});
+			const repoUrl =
+				newProjectRemoteSelection === "REMOVE"
+					? "REMOVE"
+					: (newProjectRemoteSelection?.url ?? null);
 			const createHeaders: Record<string, string> = {
 				Authorization: `Bearer ${apiKey}`,
 				"Content-Type": "application/json",
@@ -236,6 +248,7 @@ export async function runInteractiveLinkFlow(
 				type: "selected",
 				projectId: project.id,
 				orgId: project.org_id || workspace.id,
+				repoSelection: newProjectRemoteSelection,
 			};
 		}
 
@@ -250,6 +263,8 @@ export async function runInteractiveLinkFlow(
 	};
 
 	const hasOrgWorkspace = workspaceChoices.some((item) => !item.isPersonal);
+	// Tracks the remote selection made during project creation (if any) to avoid prompting twice.
+	let capturedRepoSelection: RemoteSelection | undefined;
 
 	if (!hasOrgWorkspace) {
 		const personalWorkspace = workspaceChoices.find((item) => item.isPersonal);
@@ -267,6 +282,9 @@ export async function runInteractiveLinkFlow(
 
 		projectId = selection.projectId;
 		projectOrgId = selection.orgId || projectOrgId;
+		if ("repoSelection" in selection) {
+			capturedRepoSelection = selection.repoSelection;
+		}
 	} else {
 		while (!projectId) {
 			const workspaceResponse = await prompts({
@@ -308,6 +326,9 @@ export async function runInteractiveLinkFlow(
 
 			projectId = selection.projectId;
 			projectOrgId = selection.orgId || projectOrgId;
+			if ("repoSelection" in selection) {
+				capturedRepoSelection = selection.repoSelection;
+			}
 		}
 	}
 
@@ -316,10 +337,14 @@ export async function runInteractiveLinkFlow(
 	await configService.setProjectId(projectId);
 	await configService.setProjectOrgId(projectOrgId || null);
 
-	const repoSelection = await getGitRemoteSelection({
-		forcePrompt: false,
-		promptOnMultiple: true,
-	});
+	// If the remote was already chosen during project creation, reuse it; otherwise prompt now.
+	const repoSelection: RemoteSelection =
+		capturedRepoSelection !== undefined
+			? capturedRepoSelection
+			: await getGitRemoteSelection({
+					forcePrompt: false,
+					promptOnMultiple: true,
+				});
 	const repoUrl =
 		repoSelection === "REMOVE" ? "REMOVE" : (repoSelection?.url ?? null);
 	const linkedRemoteName =

@@ -1,4 +1,6 @@
+import { execSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import {
 	applyVemUpdate,
@@ -210,6 +212,82 @@ export function registerSyncCommands(program: Command) {
 								`⚠ Failed to archive completed tasks: ${err instanceof Error ? err.message : String(err)}`,
 							),
 						);
+					}
+
+					// Auto-sync skills if skills-lock.json exists
+					if (projectId) {
+						try {
+							const repoRoot = execSync("git rev-parse --show-toplevel", {
+								encoding: "utf-8",
+							}).trim();
+							const lockPath = join(repoRoot, "skills-lock.json");
+							const lockRaw = await readFile(lockPath, "utf-8");
+							const lock = JSON.parse(lockRaw) as {
+								version: number;
+								skills: Record<
+									string,
+									{ source: string; sourceType: string; skillPath: string }
+								>;
+							};
+							const skillCount = Object.keys(lock.skills ?? {}).length;
+							// Collect skill file contents, resolving the actual local path.
+							// skills-lock.json records `skillPath` as the upstream GitHub repo
+							// path (e.g. skills/productivity/caveman/SKILL.md), but
+							// `npx skills@latest` installs files to .agents/skills/<name>/.
+							// Try the local .agents/ path first, then fall back to skillPath.
+							const skillFiles: { path: string; content: string }[] = [];
+							for (const [skillName, skill] of Object.entries(
+								lock.skills ?? {},
+							)) {
+								const agentsPath = join(
+									repoRoot,
+									".agents",
+									"skills",
+									skillName,
+									"SKILL.md",
+								);
+								const legacyPath = join(repoRoot, skill.skillPath);
+								for (const candidate of [agentsPath, legacyPath]) {
+									try {
+										const content = await readFile(candidate, "utf-8");
+										const { relative } = await import("node:path");
+										skillFiles.push({
+											path: relative(repoRoot, candidate),
+											content,
+										});
+										break;
+									} catch {
+										// try next candidate
+									}
+								}
+							}
+							const apiKey = await configService.getApiKey();
+							const deviceHeaders = await buildDeviceHeaders(configService);
+							const skillsRes = await fetch(
+								`${API_URL}/projects/${projectId}/skills`,
+								{
+									method: "PUT",
+									headers: {
+										"Content-Type": "application/json",
+										Authorization: `Bearer ${apiKey}`,
+										...deviceHeaders,
+									},
+									body: JSON.stringify({
+										skills_lock: lock,
+										skill_files: skillFiles,
+									}),
+								},
+							);
+							if (skillsRes.ok) {
+								console.log(
+									chalk.green(
+										`✔ Skills synced (${skillCount} skill${skillCount === 1 ? "" : "s"}).`,
+									),
+								);
+							}
+						} catch {
+							// No skills-lock.json or sync failed — soft failure
+						}
 					}
 
 					// Show workflow hint

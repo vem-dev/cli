@@ -4,7 +4,7 @@ import type { ConfigService } from "@vem/core";
 import chalk from "chalk";
 
 let API_URL = process.env.VEM_API_URL || "http://localhost:3002";
-const WEB_URL = process.env.VEM_WEB_URL || "http://localhost:3000";
+const WEB_URL = process.env.VEM_APP_URL || "http://localhost:3000";
 
 function getApiUrlCandidates(apiUrl: string) {
 	const candidates = [apiUrl];

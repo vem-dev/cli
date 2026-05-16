@@ -7,7 +7,7 @@ const pkg = JSON.parse(
 
 const sharedEnv = {
 	VEM_API_URL: process.env.VEM_API_URL || "http://localhost:3002",
-	VEM_WEB_URL: process.env.VEM_WEB_URL || "http://localhost:3000",
+	VEM_APP_URL: process.env.VEM_APP_URL || "http://localhost:3000",
 	VEM_CLI_SENTRY_DSN: process.env.VEM_CLI_SENTRY_DSN || "",
 };
 

@@ -14,6 +14,7 @@ import {
   DoctorService,
   ERROR_CODES,
   KNOWN_AGENT_INSTRUCTION_FILES,
+  NEW_PROJECT_HISTORY_RETENTION_DAYS,
   QUEUE_DIR,
   SCRATCHPAD_FILE,
   SUBSCRIPTION_TIERS,
@@ -26,6 +27,7 @@ import {
   VEM_DIR,
   WebhookService,
   WorkflowGuideService,
+  aiModelsEnvSchema,
   applyVemUpdate,
   bearerSecretMatches,
   commonEnvSchema,
@@ -42,8 +44,10 @@ import {
   getGitHeadHash,
   getGitLastCommitForPath,
   getHistoryCutoff,
+  getNewProjectHistoryRetentionDays,
   getRepoRoot,
   getVemDir,
+  githubAppEnvSchema,
   isVemInitialized,
   listAllAgentSessions,
   logger,
@@ -56,10 +60,11 @@ import {
   resolveSubscriptionTier,
   sanitizeError,
   sendTelegramAlert,
+  sentryEnvSchema,
   validateEnv,
   validatePasswordStrength,
   validateWebhookUrl
-} from "./chunk-VYWRLRNX.js";
+} from "./chunk-N6MJE6I4.js";
 import {
   computeCopilotSessionStats,
   getCopilotSessionsDir,
@@ -93,6 +98,7 @@ export {
   DoctorService,
   ERROR_CODES,
   KNOWN_AGENT_INSTRUCTION_FILES,
+  NEW_PROJECT_HISTORY_RETENTION_DAYS,
   QUEUE_DIR,
   SCRATCHPAD_FILE,
   SUBSCRIPTION_TIERS,
@@ -105,6 +111,7 @@ export {
   VEM_DIR,
   WebhookService,
   WorkflowGuideService,
+  aiModelsEnvSchema,
   applyVemUpdate,
   bearerSecretMatches,
   commonEnvSchema,
@@ -127,8 +134,10 @@ export {
   getGitHeadHash,
   getGitLastCommitForPath,
   getHistoryCutoff,
+  getNewProjectHistoryRetentionDays,
   getRepoRoot,
   getVemDir,
+  githubAppEnvSchema,
   isVemInitialized,
   listAllAgentSessions,
   listClaudeSessions,
@@ -145,8 +154,9 @@ export {
   resolveSubscriptionTier,
   sanitizeError,
   sendTelegramAlert,
+  sentryEnvSchema,
   validateEnv,
   validatePasswordStrength,
   validateWebhookUrl
 };
-//# sourceMappingURL=dist-RCEQFSO2.js.map
+//# sourceMappingURL=dist-DNLTXAM7.js.map
