@@ -49,9 +49,10 @@ jobs:
         run: npm publish --provenance --access public --ignore-scripts
 
       - name: Create Sentry Release
+        continue-on-error: true
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: dnotech
+          SENTRY_ORG: vem
           SENTRY_PROJECT: vem-cli
         run: |
           VERSION=$(node -p "require('./package.json').version")
