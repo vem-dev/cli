@@ -2,6 +2,7 @@ import path from "node:path";
 
 import {
 	ConfigService,
+	computeSnapshotHash,
 	ensureVemDir,
 	ensureVemFiles,
 	getRepoRoot,
@@ -18,9 +19,13 @@ import {
 	API_URL,
 	buildDeviceHeaders,
 	computeVemHash,
+	getCommits,
+	getGitHash,
 	hasUncommittedChanges,
 	installGitHook,
 	metricsService,
+	performPush,
+	syncService,
 	taskService,
 	trackCommandUsage,
 	tryAuthenticatedKey,
@@ -354,6 +359,50 @@ export function registerSetupCommands(program: Command) {
 						console.log(
 							chalk.yellow(`⚠ Agent instruction sync skipped: ${message}`),
 						);
+					}
+
+					// Auto-push full snapshot so all local state (tasks, context,
+					// decisions, changelog) is immediately in sync with the cloud project.
+					const gitHash = getGitHash();
+					if (!gitHash) {
+						console.log(
+							chalk.gray(
+								"Tip: Run `vem push` after your first commit to sync local state to the cloud.",
+							),
+						);
+					} else {
+						try {
+							console.log(chalk.blue("📦 Syncing local state to cloud..."));
+							const snapshot = await syncService.pack();
+							const snapshotHash = computeSnapshotHash(snapshot);
+							const vemHash = await computeVemHash();
+							const commits = await getCommits(50);
+							const payload = {
+								...snapshot,
+								commits,
+								project_id: resolvedProjectId,
+								git_hash: gitHash,
+								snapshot_hash: snapshotHash,
+							};
+							const result = await performPush(payload, apiKey, configService);
+							if (result.success) {
+								if (vemHash) {
+									await configService.setLastPushState({ gitHash, vemHash });
+									await configService.setLastSyncedVemHash(vemHash);
+								}
+								console.log(chalk.green("✔ Local state synced to cloud.\n"));
+							} else {
+								console.log(
+									chalk.yellow(
+										`⚠ Auto-sync skipped: ${result.error ?? "unknown error"}`,
+									),
+								);
+							}
+						} catch (error) {
+							const message =
+								error instanceof Error ? error.message : String(error);
+							console.log(chalk.yellow(`⚠ Auto-sync skipped: ${message}`));
+						}
 					}
 				} else if (!apiKey) {
 					console.log(
