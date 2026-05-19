@@ -86,6 +86,7 @@ export function registerTaskCommands(program: Command) {
 		github_issue_number?: number;
 		deleted_at?: string;
 		validation_steps?: string[];
+		acceptance_criteria?: string[];
 		cycle_id?: string;
 		impact_score?: number;
 		ready_at?: string;
@@ -199,6 +200,7 @@ export function registerTaskCommands(program: Command) {
 			github_issue_number: asFiniteNumber(record.github_issue_number),
 			deleted_at: asIsoLikeString(record.deleted_at),
 			validation_steps: asStringArray(record.validation_steps),
+			acceptance_criteria: asStringArray(record.acceptance_criteria),
 		};
 	};
 
@@ -367,6 +369,7 @@ export function registerTaskCommands(program: Command) {
 			subtask_order?: number;
 			due_at?: string;
 			validation_steps?: string[];
+			acceptance_criteria?: string[];
 			deleted_at?: string;
 			reasoning?: string;
 			actor?: string;
@@ -425,6 +428,9 @@ export function registerTaskCommands(program: Command) {
 			if (patch.due_at !== undefined) payload.due_at = patch.due_at;
 			if (patch.validation_steps !== undefined) {
 				payload.validation_steps = patch.validation_steps;
+			}
+			if (patch.acceptance_criteria !== undefined) {
+				payload.acceptance_criteria = patch.acceptance_criteria;
 			}
 			if (patch.deleted_at !== undefined) payload.deleted_at = patch.deleted_at;
 			if (patch.sessions !== undefined) payload.sessions = patch.sessions;
@@ -2915,4 +2921,106 @@ export function registerTaskCommands(program: Command) {
 				);
 			}
 		});
+
+	// ── vem task spec ─────────────────────────────────────────────────────────
+	taskCmd
+		.command("spec <id>")
+		.description("View or set acceptance criteria for a task")
+		.option(
+			"--set <criteria...>",
+			"Set acceptance criteria (space-separated, or use multiple --set flags)",
+		)
+		.option("--add <criterion>", "Add a single acceptance criterion")
+		.option("--clear", "Remove all acceptance criteria")
+		.action(
+			async (
+				id: string,
+				options: { set?: string[]; add?: string; clear?: boolean },
+			) => {
+				await trackCommandUsage("task.spec");
+				// Fetch from API (cloud tasks don't exist in local .vem/ files)
+				const task = await getRemoteTaskById(id);
+				if (!task) {
+					console.error(chalk.red(`Task ${id} not found.`));
+					process.exitCode = 1;
+					return;
+				}
+
+				if (options.clear) {
+					const ok = await updateRemoteTaskMeta(id, {
+						acceptance_criteria: [],
+					});
+					if (ok) {
+						console.log(
+							chalk.green(`✔ Cleared acceptance criteria for ${id}.`),
+						);
+					} else {
+						console.error(chalk.red("Failed to update acceptance criteria."));
+						process.exitCode = 1;
+					}
+					return;
+				}
+
+				if (options.set) {
+					const criteria = Array.isArray(options.set)
+						? options.set
+						: [options.set];
+					const ok = await updateRemoteTaskMeta(id, {
+						acceptance_criteria: criteria,
+					});
+					if (ok) {
+						console.log(
+							chalk.green(
+								`✔ Set ${criteria.length} acceptance criteria for ${id}: ${task.title}`,
+							),
+						);
+						for (const [i, c] of criteria.entries()) {
+							console.log(chalk.gray(`  ${i + 1}. ${c}`));
+						}
+					} else {
+						console.error(chalk.red("Failed to update acceptance criteria."));
+						process.exitCode = 1;
+					}
+					return;
+				}
+
+				if (options.add) {
+					const existing = task.acceptance_criteria ?? [];
+					const updated = [...existing, options.add];
+					const ok = await updateRemoteTaskMeta(id, {
+						acceptance_criteria: updated,
+					});
+					if (ok) {
+						console.log(
+							chalk.green(
+								`✔ Added criterion (${updated.length} total) for ${id}.`,
+							),
+						);
+					} else {
+						console.error(chalk.red("Failed to update acceptance criteria."));
+						process.exitCode = 1;
+					}
+					return;
+				}
+
+				// Show mode
+				const criteria = task.acceptance_criteria ?? [];
+				console.log(
+					chalk.bold(`\nAcceptance Criteria — ${id}: ${task.title}\n`),
+				);
+				if (criteria.length === 0) {
+					console.log(chalk.yellow("  No acceptance criteria defined."));
+					console.log(
+						chalk.gray(
+							`  Set them with: vem task spec ${id} --set "criterion 1" "criterion 2"\n`,
+						),
+					);
+				} else {
+					for (const [i, c] of criteria.entries()) {
+						console.log(`  ${chalk.cyan(`${i + 1}.`)} ${c}`);
+					}
+					console.log();
+				}
+			},
+		);
 }

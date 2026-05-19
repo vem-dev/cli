@@ -1,6 +1,14 @@
 import { execSync } from "node:child_process";
 import path from "node:path";
-import { ConfigService, CURRENT_STATE_FILE, getVemDir } from "@vem/core";
+import {
+	ConfigService,
+	CURRENT_STATE_FILE,
+	CycleValidationService,
+	DECISIONS_DIR,
+	getVemDir,
+	ScalableLogService,
+	ValidationRulesService,
+} from "@vem/core";
 import chalk from "chalk";
 import type { Command } from "commander";
 import fs from "fs-extra";
@@ -504,6 +512,157 @@ export function registerMaintenanceCommands(program: Command) {
 				console.error(
 					chalk.red(`\n✖ Failed to generate summary: ${error.message}\n`),
 				);
+			}
+		});
+
+	// --- Validation Rules ---
+	const validationCmd = program
+		.command("validation")
+		.description("Manage validation rules (.vem/validation-rules.json)");
+
+	validationCmd
+		.command("show")
+		.description("Display current validation rules")
+		.action(async () => {
+			try {
+				const rulesService = new ValidationRulesService();
+				const rules = await rulesService.readRules();
+				console.log(chalk.bold("\n🔒 Validation Rules\n"));
+				const rows: [string, unknown][] = [
+					["require_evidence_on_done", rules.require_evidence_on_done],
+					[
+						"require_all_tasks_done_to_close",
+						rules.require_all_tasks_done_to_close,
+					],
+					["run_sensors_on_validate", rules.run_sensors_on_validate],
+					["trigger_ai_review_on_close", rules.trigger_ai_review_on_close],
+					["require_no_blocked_tasks", rules.require_no_blocked_tasks],
+					["strict_mode", rules.strict_mode],
+					["preferred_backend", rules.preferred_backend],
+				];
+				for (const [key, val] of rows) {
+					const icon =
+						val === true
+							? chalk.green("✓")
+							: val === false
+								? chalk.gray("✗")
+								: chalk.cyan(String(val));
+					console.log(`  ${chalk.bold(key.padEnd(40))} ${icon}`);
+				}
+				console.log();
+			} catch (error: any) {
+				console.error(chalk.red(`\n✖ ${error.message}\n`));
+			}
+		});
+
+	validationCmd
+		.command("edit")
+		.description("Edit validation rules in $EDITOR")
+		.action(async () => {
+			try {
+				const vemDir = await getVemDir();
+				const rulesPath = path.join(vemDir, "validation-rules.json");
+				// Ensure file exists with defaults
+				if (!(await fs.pathExists(rulesPath))) {
+					const rulesService = new ValidationRulesService();
+					await rulesService.readRules(); // creates defaults
+				}
+				const editor = process.env.EDITOR || process.env.VISUAL || "vi";
+				execSync(`${editor} "${rulesPath}"`, { stdio: "inherit" });
+				console.log(chalk.green("\n✔ Validation rules updated.\n"));
+			} catch (error: any) {
+				console.error(chalk.red(`\n✖ ${error.message}\n`));
+			}
+		});
+
+	// --- Drift Check ---
+	const driftCmd = program
+		.command("drift")
+		.description(
+			"Architecture drift detection based on ADRs and recent git changes",
+		);
+
+	driftCmd
+		.command("check")
+		.description(
+			"Check for architecture drift: ADR enforcement patterns vs recent git diff",
+		)
+		.option(
+			"--since <ref>",
+			"Git ref or ISO date to diff from (default: HEAD~30)",
+		)
+		.action(async (options: { since?: string }) => {
+			await trackCommandUsage("drift.check");
+			try {
+				const cycleValidationService = new CycleValidationService();
+
+				// Load decisions and parse enforcement_pattern from markdown content
+				const decisionsLog = new ScalableLogService(DECISIONS_DIR);
+				const rawDecisions = await decisionsLog.getAllEntries();
+
+				// Parse **Enforcement Pattern:** lines from decision markdown content
+				const decisions = rawDecisions
+					.map((d) => {
+						const match = d.content.match(
+							/\*\*Enforcement Pattern:\*\*\s*(.+)/i,
+						);
+						return {
+							id: d.id,
+							title: d.title,
+							enforcement_pattern: match ? match[1].trim() : undefined,
+						};
+					})
+					.filter((d) => d.enforcement_pattern);
+
+				if (decisions.length === 0) {
+					console.log(
+						chalk.yellow(
+							"\n⚠  No decisions have an Enforcement Pattern set.\n",
+						),
+					);
+					console.log(
+						chalk.gray(
+							"  Add '**Enforcement Pattern:** <regex>' to a decision file in .vem/decisions/",
+						),
+					);
+					console.log(
+						chalk.gray(
+							"  Or use: vem decision add ... --enforcement-pattern <regex>\n",
+						),
+					);
+					return;
+				}
+
+				const gitDiff = cycleValidationService.getGitDiffSince(options.since);
+				const violations = cycleValidationService.checkDrift(
+					decisions,
+					gitDiff,
+				);
+
+				console.log(chalk.bold("\n🔍  Architecture Drift Check\n"));
+				console.log(
+					chalk.gray(
+						`  Checking ${decisions.length} decision(s) with enforcement patterns...\n`,
+					),
+				);
+
+				if (violations.length === 0) {
+					console.log(chalk.green("  ✔ No drift violations detected.\n"));
+				} else {
+					console.log(
+						chalk.red(`  ✖ ${violations.length} violation(s) found:\n`),
+					);
+					for (const v of violations) {
+						console.log(`  ${chalk.bold(v.decisionTitle)}`);
+						console.log(`    File:    ${chalk.cyan(v.file)}:${v.line}`);
+						console.log(`    Pattern: ${chalk.gray(v.pattern)}`);
+						console.log(`    Match:   ${chalk.yellow(v.match)}\n`);
+					}
+					process.exitCode = 1;
+				}
+			} catch (error: any) {
+				console.error(chalk.red(`\n✖ Drift check failed: ${error.message}\n`));
+				process.exitCode = 1;
 			}
 		});
 }

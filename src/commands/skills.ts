@@ -151,6 +151,26 @@ export function registerSkillsCommands(program: Command) {
 
 			console.log(chalk.green(`\n✔ Skills from ${source} installed.\n`));
 
+			// Warn if newly installed skills have no checksum
+			try {
+				const repoRoot = await getRepoRoot();
+				const lock = await readSkillsLock(repoRoot);
+				if (lock?.skills) {
+					const unverified = Object.entries(lock.skills).filter(
+						([, s]) => !s.computedHash,
+					);
+					if (unverified.length > 0) {
+						console.log(
+							chalk.yellow(
+								`⚠  ${unverified.length} skill(s) have no checksum — run \`vem skills verify\` to audit them.`,
+							),
+						);
+					}
+				}
+			} catch {
+				// lock read is best-effort
+			}
+
 			if (options.push !== false) {
 				const shouldPush = await promptPushToCloud();
 				if (shouldPush) {
@@ -612,6 +632,131 @@ export function registerSkillsCommands(program: Command) {
 					error instanceof Error ? error.message : String(error),
 				);
 				process.exitCode = 1;
+			}
+		});
+
+	// ── vem skills verify ─────────────────────────────────────────────────────
+	skillsCmd
+		.command("verify")
+		.description(
+			"Verify SHA-256 checksums of installed skills against skills-lock.json",
+		)
+		.option(
+			"--fix",
+			"Update skills-lock.json with current checksums (after manual review)",
+		)
+		.action(async (options: { fix?: boolean }) => {
+			await trackCommandUsage("skills.verify");
+			const { createHash } = await import("node:crypto");
+			const repoRoot = await getRepoRoot();
+			const lock = await readSkillsLock(repoRoot);
+
+			if (!lock || Object.keys(lock.skills ?? {}).length === 0) {
+				console.log(chalk.yellow("No skills installed. Nothing to verify."));
+				return;
+			}
+
+			let allPass = true;
+			const results: Array<{
+				name: string;
+				status: "pass" | "fail" | "missing";
+				current?: string;
+				expected?: string;
+			}> = [];
+
+			for (const [name, skill] of Object.entries(lock.skills)) {
+				if (!skill.computedHash) {
+					results.push({ name, status: "missing" });
+					allPass = false;
+					continue;
+				}
+
+				const absPath = await resolveSkillLocalPath(
+					repoRoot,
+					name,
+					skill.skillPath,
+				);
+				if (!absPath) {
+					results.push({ name, status: "missing" });
+					allPass = false;
+					continue;
+				}
+
+				try {
+					const content = await fs.readFile(absPath, "utf-8");
+					const currentHash = createHash("sha256")
+						.update(content)
+						.digest("hex");
+					const pass = currentHash === skill.computedHash;
+					results.push({
+						name,
+						status: pass ? "pass" : "fail",
+						current: currentHash,
+						expected: skill.computedHash,
+					});
+					if (!pass) allPass = false;
+				} catch {
+					results.push({ name, status: "missing" });
+					allPass = false;
+				}
+			}
+
+			console.log(chalk.bold("\nSkills Verification:\n"));
+			for (const r of results) {
+				if (r.status === "pass") {
+					console.log(`  ${chalk.green("✔")} ${chalk.cyan(r.name)}`);
+				} else if (r.status === "fail") {
+					console.log(
+						`  ${chalk.red("✖")} ${chalk.cyan(r.name)} ${chalk.red("CHECKSUM MISMATCH")}`,
+					);
+					console.log(chalk.gray(`    expected: ${r.expected}`));
+					console.log(chalk.gray(`    current:  ${r.current}`));
+				} else {
+					console.log(
+						`  ${chalk.yellow("?")} ${chalk.cyan(r.name)} ${chalk.yellow("FILE NOT FOUND")}`,
+					);
+				}
+			}
+
+			if (allPass) {
+				console.log(chalk.green("\n✔ All skills verified.\n"));
+			} else {
+				if (options.fix) {
+					const lockPath = path.join(repoRoot, SKILLS_LOCK_FILE);
+					const current = lock;
+					for (const r of results) {
+						if (r.status === "fail" && r.current) {
+							current.skills[r.name].computedHash = r.current;
+						}
+					}
+					await fs.writeFile(
+						lockPath,
+						JSON.stringify(current, null, "\t"),
+						"utf-8",
+					);
+					console.log(
+						chalk.yellow(
+							"\n⚠ Updated skills-lock.json with current checksums.",
+						),
+					);
+					console.log(
+						chalk.gray(
+							"  Review changes carefully — only accept expected updates.\n",
+						),
+					);
+				} else {
+					console.log(
+						chalk.red(
+							"\n✖ Some skills failed verification. Review changes before proceeding.",
+						),
+					);
+					console.log(
+						chalk.gray(
+							"  Run `vem skills verify --fix` to update checksums after manual review.\n",
+						),
+					);
+					process.exitCode = 1;
+				}
 			}
 		});
 }

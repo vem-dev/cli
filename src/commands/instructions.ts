@@ -1,7 +1,11 @@
 // apps/cli/src/commands/instructions.ts
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { ConfigService, KNOWN_AGENT_INSTRUCTION_FILES } from "@vem/core";
+import {
+	ConfigService,
+	ConstitutionService,
+	KNOWN_AGENT_INSTRUCTION_FILES,
+} from "@vem/core";
 import chalk from "chalk";
 import type { Command } from "commander";
 import prompts from "prompts";
@@ -496,5 +500,106 @@ export function registerInstructionCommands(program: Command) {
 				);
 				process.exitCode = 1;
 			}
+		});
+
+	// ── vem constitution ──────────────────────────────────────────────────────
+	const constitutionService = new ConstitutionService();
+	const constitutionCmd = program
+		.command("constitution")
+		.description(
+			"Manage the Agent Constitution — immutable principles for all AI agents",
+		);
+
+	constitutionCmd
+		.command("show")
+		.description("Print the current Agent Constitution")
+		.action(async () => {
+			await trackCommandUsage("constitution.show");
+			const content = await constitutionService.get();
+			if (!content) {
+				console.log(
+					chalk.yellow(
+						"No constitution found. Run `vem constitution init` to create one.",
+					),
+				);
+				return;
+			}
+			console.log(content);
+		});
+
+	constitutionCmd
+		.command("init")
+		.description("Create a default Agent Constitution in .vem/CONSTITUTION.md")
+		.action(async () => {
+			await trackCommandUsage("constitution.init");
+			const created = await constitutionService.initDefault();
+			if (created) {
+				console.log(
+					chalk.green(
+						"✔ Created .vem/CONSTITUTION.md with default principles.",
+					),
+				);
+				console.log(
+					chalk.gray("  Edit it with `vem constitution edit` to customize."),
+				);
+			} else {
+				console.log(
+					chalk.yellow(
+						"Constitution already exists. Use `vem constitution edit` to modify it.",
+					),
+				);
+			}
+		});
+
+	constitutionCmd
+		.command("edit")
+		.description("Edit the Agent Constitution in your $EDITOR")
+		.action(async () => {
+			await trackCommandUsage("constitution.edit");
+			const { execSync } = await import("node:child_process");
+			const { getVemDir } = await import("@vem/core");
+			const vemDir = await getVemDir();
+			const constitutionPath = path.join(vemDir, "CONSTITUTION.md");
+
+			// Ensure the file exists before opening
+			const exists = await constitutionService.exists();
+			if (!exists) {
+				await constitutionService.initDefault();
+				console.log(
+					chalk.gray("Created default constitution — opening in editor..."),
+				);
+			}
+
+			const editor = process.env.EDITOR ?? process.env.VISUAL ?? "nano";
+			try {
+				execSync(`${editor} "${constitutionPath}"`, { stdio: "inherit" });
+				console.log(chalk.green("✔ Constitution updated."));
+			} catch {
+				console.log(
+					chalk.yellow(
+						`Could not open editor. Edit manually: ${constitutionPath}`,
+					),
+				);
+			}
+		});
+
+	constitutionCmd
+		.command("set")
+		.description("Set the Agent Constitution from stdin")
+		.option("--file <path>", "Read constitution from a file instead of stdin")
+		.action(async (options: { file?: string }) => {
+			await trackCommandUsage("constitution.set");
+			let content: string;
+			if (options.file) {
+				content = await fs.readFile(options.file, "utf-8");
+			} else {
+				const chunks: Buffer[] = [];
+				for await (const chunk of process.stdin) {
+					chunks.push(chunk as Buffer);
+				}
+				content = Buffer.concat(chunks).toString("utf-8");
+			}
+			await constitutionService.set(content.trim());
+			console.log(chalk.green("✔ Constitution updated."));
 		});
 }

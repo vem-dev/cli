@@ -337,6 +337,13 @@ export async function runInteractiveLinkFlow(
 	await configService.setProjectId(projectId);
 	await configService.setProjectOrgId(projectOrgId || null);
 
+	// Cache the human-readable project name so commands like `vem runner` can
+	// display it without an extra API call.
+	const linkedProject = projects.find((p) => p.id === projectId);
+	if (linkedProject?.name) {
+		await configService.setProjectName(linkedProject.name);
+	}
+
 	// If the remote was already chosen during project creation, reuse it; otherwise prompt now.
 	const repoSelection: RemoteSelection =
 		capturedRepoSelection !== undefined
@@ -441,6 +448,9 @@ export function registerProjectCommands(program: Command) {
 						return;
 					}
 					projectOrgId = check.orgId || projectOrgId;
+					if (check.name) {
+						await configService.setProjectName(check.name);
+					}
 				}
 
 				if (projectId) {

@@ -12,6 +12,7 @@ import { registerPlanCommands } from "./commands/plans.js";
 import { registerProjectCommands } from "./commands/project.js";
 import { registerRunnerCommands } from "./commands/runner.js";
 import { registerSearchCommands } from "./commands/search.js";
+import { registerSensorsCommands } from "./commands/sensors.js";
 import { registerSessionsCommands } from "./commands/sessions.js";
 import { registerSetupCommands } from "./commands/setup.js";
 import { registerSkillsCommands } from "./commands/skills.js";
@@ -97,6 +98,7 @@ registerMaintenanceCommands(program);
 registerSessionsCommands(program);
 registerInstructionCommands(program);
 registerSkillsCommands(program);
+registerSensorsCommands(program);
 
 await trackHelpUsageFromArgv(process.argv.slice(2));
 

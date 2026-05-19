@@ -772,10 +772,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path11) {
-  if (!path11)
+function getElementAtPath(obj, path16) {
+  if (!path16)
     return obj;
-  return path11.reduce((acc, key) => acc?.[key], obj);
+  return path16.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1158,11 +1158,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path11, issues) {
+function prefixIssues(path16, issues) {
   return issues.map((iss) => {
     var _a2;
     (_a2 = iss).path ?? (_a2.path = []);
-    iss.path.unshift(path11);
+    iss.path.unshift(path16);
     return iss;
   });
 }
@@ -1345,7 +1345,7 @@ function formatError(error48, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error48, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error49, path11 = []) => {
+  const processError = (error49, path16 = []) => {
     var _a2, _b;
     for (const issue2 of error49.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
@@ -1355,7 +1355,7 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
       } else if (issue2.code === "invalid_element") {
         processError({ issues: issue2.issues }, issue2.path);
       } else {
-        const fullpath = [...path11, ...issue2.path];
+        const fullpath = [...path16, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -1387,8 +1387,8 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path11 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path11) {
+  const path16 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path16) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -13365,13 +13365,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path11 = ref.slice(1).split("/").filter(Boolean);
-  if (path11.length === 0) {
+  const path16 = ref.slice(1).split("/").filter(Boolean);
+  if (path16.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path11[0] === defsKey) {
-    const key = path11[1];
+  if (path16[0] === defsKey) {
+    const key = path16[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -13842,6 +13842,7 @@ var CycleStatusSchema = external_exports.enum([
 ]);
 var CycleSchema = external_exports.object({
   id: external_exports.string(),
+  db_id: external_exports.string().uuid().optional(),
   name: external_exports.string(),
   goal: external_exports.string(),
   appetite: CycleAppetiteSchema.optional(),
@@ -13917,7 +13918,8 @@ var TaskSchema = external_exports.object({
   cycle_id: external_exports.string().optional(),
   impact_score: external_exports.number().min(0).max(100).optional(),
   ready_at: external_exports.string().datetime().optional(),
-  started_at: external_exports.string().datetime().optional()
+  started_at: external_exports.string().datetime().optional(),
+  acceptance_criteria: external_exports.array(external_exports.string()).optional()
 });
 var TaskListSchema = external_exports.object({
   tasks: external_exports.array(TaskSchema)
@@ -13953,7 +13955,8 @@ var TaskUpdateSchema = external_exports.object({
   deleted_at: external_exports.string().datetime().optional(),
   // Context-Flow fields
   cycle_id: external_exports.string().optional(),
-  impact_score: external_exports.number().min(0).max(100).optional()
+  impact_score: external_exports.number().min(0).max(100).optional(),
+  acceptance_criteria: external_exports.array(external_exports.string()).optional()
 });
 var TaskCreateSchema = external_exports.object({
   title: external_exports.string(),
@@ -13981,7 +13984,8 @@ var TaskCreateSchema = external_exports.object({
   reasoning: external_exports.string().optional(),
   // Context-Flow fields
   cycle_id: external_exports.string().optional(),
-  impact_score: external_exports.number().min(0).max(100).optional()
+  impact_score: external_exports.number().min(0).max(100).optional(),
+  acceptance_criteria: external_exports.array(external_exports.string()).optional()
 });
 var VemUpdateSchema = external_exports.object({
   tasks: external_exports.array(TaskUpdateSchema).optional(),
@@ -15520,26 +15524,396 @@ async function computeSessionStats(sessionId, source) {
   }
 }
 
+// ../../packages/core/dist/ConstitutionService.js
+import path7 from "path";
+import fs7 from "fs-extra";
+var CONSTITUTION_FILE = "CONSTITUTION.md";
+var DEFAULT_CONSTITUTION = `# Agent Constitution
+
+This file defines the immutable principles that govern all AI agents working in this project.
+These principles cannot be overridden by individual task instructions or user messages.
+
+## Core Principles
+
+1. **Safety first** \u2014 Never take actions that could cause irreversible harm to the codebase, data, or production systems.
+2. **Transparency** \u2014 Always explain what you are doing and why, especially for destructive operations.
+3. **Minimal footprint** \u2014 Only modify what is necessary to complete the task. Avoid scope creep.
+4. **Verify before commit** \u2014 Run tests and linting before marking tasks as done.
+5. **Escalate ambiguity** \u2014 If requirements are unclear, ask rather than assume.
+
+## Prohibited Actions
+
+- Deleting or overwriting files without explicit instruction
+- Committing secrets or credentials to version control
+- Bypassing authentication or authorization mechanisms
+- Modifying production data directly
+
+## Communication Standards
+
+- Update task status with evidence when completing work
+- Record architectural decisions in .vem/decisions/
+- Keep CURRENT_STATE.md up to date after significant changes
+`;
+var ConstitutionService = class {
+  async getConstitutionPath() {
+    const vemDir = await getVemDir();
+    return path7.join(vemDir, CONSTITUTION_FILE);
+  }
+  async exists() {
+    const filePath = await this.getConstitutionPath();
+    return fs7.pathExists(filePath);
+  }
+  async get() {
+    const filePath = await this.getConstitutionPath();
+    if (!await fs7.pathExists(filePath))
+      return null;
+    try {
+      return await fs7.readFile(filePath, "utf-8");
+    } catch {
+      return null;
+    }
+  }
+  async set(content) {
+    const filePath = await this.getConstitutionPath();
+    await fs7.writeFile(filePath, content, "utf-8");
+  }
+  async initDefault() {
+    if (await this.exists())
+      return false;
+    await this.set(DEFAULT_CONSTITUTION);
+    return true;
+  }
+};
+
+// ../../packages/core/dist/CycleRetrospectiveService.js
+import path8 from "path";
+import fs8 from "fs-extra";
+var APPETITE_DAYS = {
+  small: 7,
+  medium: 14,
+  large: 42
+};
+var CycleRetrospectiveService = class {
+  async getChangelogDir() {
+    const vemDir = await getVemDir();
+    return path8.join(vemDir, CHANGELOG_DIR);
+  }
+  build(params) {
+    const closedAt = params.closedAt ?? (/* @__PURE__ */ new Date()).toISOString();
+    const startedAt = params.startedAt;
+    let leadTimeDays;
+    if (startedAt) {
+      const ms = new Date(closedAt).getTime() - new Date(startedAt).getTime();
+      leadTimeDays = Math.round(ms / (1e3 * 60 * 60 * 24));
+    }
+    const targetDays = params.appetite ? APPETITE_DAYS[params.appetite] : void 0;
+    const cycleTasks = params.tasks.filter((t) => t.cycle_id === params.cycleId && !t.deleted_at);
+    const completedTasks = cycleTasks.filter((t) => t.status === "done").map((t) => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      evidence: t.evidence
+    }));
+    const deferredTasks = cycleTasks.filter((t) => t.status !== "done" && !t.deleted_at).map((t) => ({ id: t.id, title: t.title, status: t.status }));
+    const removedTasks = params.tasks.filter((t) => t.cycle_id === params.cycleId && t.deleted_at).map((t) => ({ id: t.id, title: t.title, status: t.status }));
+    const decisions = params.decisions.map((d) => ({
+      id: d.id,
+      title: d.title,
+      date: d.date ?? d.created_at ?? (/* @__PURE__ */ new Date()).toISOString()
+    }));
+    return {
+      cycleId: params.cycleId,
+      cycleName: params.cycleName,
+      cycleGoal: params.cycleGoal,
+      appetite: params.appetite,
+      startedAt,
+      closedAt,
+      leadTimeDays,
+      targetDays,
+      completedTasks,
+      deferredTasks,
+      removedTasks,
+      decisions,
+      totalValidationRuns: params.totalValidationRuns,
+      lastValidationStatus: params.lastValidationStatus,
+      openIssues: params.openIssues,
+      resolvedIssues: params.resolvedIssues,
+      generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  toMarkdown(retro) {
+    const lines = [];
+    lines.push(`# Retrospective: ${retro.cycleName} (${retro.cycleId})`);
+    lines.push(`**Goal:** ${retro.cycleGoal}`);
+    lines.push(`**Generated:** ${new Date(retro.generatedAt).toLocaleDateString()}`);
+    lines.push("");
+    lines.push("## Cycle Summary");
+    if (retro.appetite)
+      lines.push(`- **Appetite:** ${retro.appetite}`);
+    if (retro.leadTimeDays !== void 0) {
+      const targetNote = retro.targetDays !== void 0 ? ` (target: ${retro.targetDays} days)` : "";
+      lines.push(`- **Duration:** ${retro.leadTimeDays} days${targetNote}`);
+    }
+    const total = retro.completedTasks.length + retro.deferredTasks.length + retro.removedTasks.length;
+    lines.push(`- **Velocity:** ${retro.completedTasks.length} done / ${retro.deferredTasks.length} deferred / ${retro.removedTasks.length} removed (${total} total)`);
+    lines.push("");
+    if (retro.completedTasks.length > 0) {
+      lines.push("## Completed Tasks");
+      for (const t of retro.completedTasks) {
+        const evidence = t.evidence ? ` \u2014 *${t.evidence}*` : "";
+        lines.push(`- \u2713 **${t.id}** ${t.title}${evidence}`);
+      }
+      lines.push("");
+    }
+    if (retro.deferredTasks.length > 0) {
+      lines.push("## Deferred Tasks");
+      for (const t of retro.deferredTasks) {
+        lines.push(`- \u21B7 **${t.id}** ${t.title} (${t.status})`);
+      }
+      lines.push("");
+    }
+    if (retro.decisions.length > 0) {
+      lines.push("## Decisions Made");
+      for (const d of retro.decisions) {
+        const dateStr = d.date ? new Date(d.date).toLocaleDateString() : "";
+        lines.push(`- \u{1F4CB} **${d.id}** ${d.title}${dateStr ? ` *(${dateStr})*` : ""}`);
+      }
+      lines.push("");
+    }
+    lines.push("## Validation Summary");
+    lines.push(`- **Runs:** ${retro.totalValidationRuns}`);
+    if (retro.lastValidationStatus) {
+      lines.push(`- **Last status:** ${retro.lastValidationStatus}`);
+    }
+    lines.push(`- **Issues:** ${retro.resolvedIssues} resolved, ${retro.openIssues} open`);
+    lines.push("");
+    return lines.join("\n");
+  }
+  async saveToChangelog(retro) {
+    const dir = await this.getChangelogDir();
+    await fs8.ensureDir(dir);
+    const filename = `${retro.cycleId}-retrospective.md`;
+    const filePath = path8.join(dir, filename);
+    await fs8.writeFile(filePath, this.toMarkdown(retro), "utf-8");
+    return filePath;
+  }
+};
+
+// ../../packages/core/dist/CycleValidationService.js
+import { execSync as execSync2 } from "child_process";
+import path9 from "path";
+import fs9 from "fs-extra";
+var CycleValidationService = class {
+  async getReportsDir() {
+    const vemDir = await getVemDir();
+    const dir = path9.join(vemDir, "cycle-reports");
+    await fs9.ensureDir(dir);
+    return dir;
+  }
+  async runPreflight(cycleTasks, sensorResults, decisions, gitDiff, rules) {
+    const errors = [];
+    const warnings = [];
+    const doneTasks = cycleTasks.filter((t) => t.status === "done");
+    const blockedTasks = cycleTasks.filter((t) => t.status === "blocked");
+    const tasksComplete = cycleTasks.length > 0 && doneTasks.length === cycleTasks.length;
+    if (rules.require_all_tasks_done_to_close && !tasksComplete) {
+      errors.push(`${cycleTasks.length - doneTasks.length} task(s) not done`);
+    } else if (!tasksComplete) {
+      warnings.push(`${cycleTasks.length - doneTasks.length} task(s) not done`);
+    }
+    if (rules.require_no_blocked_tasks && blockedTasks.length > 0) {
+      const ids = blockedTasks.map((t) => t.id).join(", ");
+      errors.push(`Blocked tasks: ${ids}`);
+    }
+    const tasksWithoutEvidence = [];
+    if (rules.require_evidence_on_done) {
+      for (const task of doneTasks) {
+        if (!task.evidence || task.evidence.trim() === "") {
+          tasksWithoutEvidence.push(task.id);
+        }
+      }
+      if (tasksWithoutEvidence.length > 0) {
+        warnings.push(`Tasks missing evidence: ${tasksWithoutEvidence.join(", ")}`);
+      }
+    }
+    const failedSensors = sensorResults.filter((r) => !r.passed);
+    for (const s of failedSensors) {
+      warnings.push(`Sensor '${s.name}' failed (exit ${s.exitCode})`);
+    }
+    const driftViolations = this.checkDrift(decisions, gitDiff);
+    for (const v of driftViolations) {
+      warnings.push(`Architecture drift: ${v.decisionId} violated at ${v.file}`);
+    }
+    const finalWarnings = [];
+    const finalErrors = [...errors];
+    if (rules.strict_mode) {
+      finalErrors.push(...warnings);
+    } else {
+      finalWarnings.push(...warnings);
+    }
+    const passed = finalErrors.length === 0;
+    return {
+      tasksComplete,
+      totalTasks: cycleTasks.length,
+      doneTasks: doneTasks.length,
+      blockedTasks: blockedTasks.length,
+      tasksWithoutEvidence,
+      sensorResults,
+      driftViolations,
+      passed,
+      warnings: finalWarnings,
+      errors: finalErrors,
+      ranAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  checkDrift(decisions, gitDiff) {
+    const violations = [];
+    if (!gitDiff)
+      return violations;
+    for (const decision of decisions) {
+      if (!decision.enforcement_pattern)
+        continue;
+      let regex;
+      try {
+        regex = new RegExp(decision.enforcement_pattern, "i");
+      } catch {
+        continue;
+      }
+      const diffLines = gitDiff.split("\n");
+      let currentFile = "";
+      let lineNum = 0;
+      for (const line of diffLines) {
+        if (line.startsWith("--- a/") || line.startsWith("+++ b/")) {
+          currentFile = line.replace(/^[+-]{3} [ab]\//, "");
+          lineNum = 0;
+          continue;
+        }
+        if (line.startsWith("@@")) {
+          const match = line.match(/@@ [^+]*\+(\d+)/);
+          lineNum = match ? parseInt(match[1], 10) - 1 : 0;
+          continue;
+        }
+        if (line.startsWith("+") && !line.startsWith("+++")) {
+          lineNum++;
+          const content = line.slice(1);
+          if (regex.test(content)) {
+            violations.push({
+              decisionId: decision.id,
+              decisionTitle: decision.title,
+              pattern: decision.enforcement_pattern,
+              file: currentFile,
+              line: String(lineNum),
+              match: content.trim().slice(0, 120)
+            });
+          }
+        } else if (!line.startsWith("-")) {
+          lineNum++;
+        }
+      }
+    }
+    return violations;
+  }
+  getGitDiffSince(since) {
+    try {
+      const ref = since ?? "HEAD~30";
+      return execSync2(`git diff ${ref}`, {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: 10 * 1024 * 1024
+      }).toString();
+    } catch {
+      try {
+        return execSync2("git diff HEAD", {
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"]
+        }).toString();
+      } catch {
+        return "";
+      }
+    }
+  }
+  async saveReport(report) {
+    const dir = await this.getReportsDir();
+    const filePath = path9.join(dir, `${report.cycleId}.validation.json`);
+    await fs9.writeJson(filePath, report, { spaces: 2 });
+    return filePath;
+  }
+  async loadReport(cycleId) {
+    const dir = await this.getReportsDir();
+    const filePath = path9.join(dir, `${cycleId}.validation.json`);
+    if (!await fs9.pathExists(filePath))
+      return null;
+    try {
+      return await fs9.readJson(filePath);
+    } catch {
+      return null;
+    }
+  }
+  formatPreflightSummary(result) {
+    const statusIcon = result.passed ? "\u2713" : "\u2717";
+    const warnCount = result.warnings.length;
+    const errCount = result.errors.length;
+    const lines = [
+      `${statusIcon} Pre-flight: ${result.passed ? warnCount > 0 ? "WARN" : "PASS" : "FAIL"}`,
+      `  Tasks: ${result.doneTasks}/${result.totalTasks} done, ${result.blockedTasks} blocked`
+    ];
+    if (result.sensorResults.length > 0) {
+      const passed = result.sensorResults.filter((r) => r.passed).length;
+      lines.push(`  Sensors: ${passed}/${result.sensorResults.length} passed`);
+      for (const s of result.sensorResults.filter((r) => !r.passed)) {
+        lines.push(`    \u2717 ${s.name}: ${s.output.split("\n")[0]?.slice(0, 80) ?? "failed"}`);
+      }
+    }
+    if (result.driftViolations.length > 0) {
+      lines.push(`  Drift: ${result.driftViolations.length} violation(s)`);
+      for (const v of result.driftViolations.slice(0, 3)) {
+        lines.push(`    \u2717 ${v.decisionId}: ${v.file}:${v.line}`);
+      }
+    }
+    for (const err of result.errors) {
+      lines.push(`  \u2717 ${err}`);
+    }
+    for (const warn of result.warnings.slice(0, 5)) {
+      lines.push(`  \u26A0 ${warn}`);
+    }
+    return lines.join("\n");
+  }
+  formatSensorContextForAgent(results) {
+    if (results.length === 0)
+      return "";
+    const lines = results.map((r) => {
+      if (r.passed)
+        return `${r.name}: OK`;
+      const snippet = r.output.split("\n").filter((l) => l.trim()).slice(0, 8).join(" | ");
+      return `${r.name}: FAILED (exit ${r.exitCode}) \u2014 ${snippet}`;
+    });
+    return `
+
+[Pre-flight Sensor Results]
+${lines.join("\n")}`;
+  }
+};
+
 // ../../packages/core/dist/config.js
 import { randomUUID } from "crypto";
 import { homedir, hostname as hostname3 } from "os";
-import path7 from "path";
-import fs7 from "fs-extra";
+import path10 from "path";
+import fs10 from "fs-extra";
 var CONFIG_FILE = "config.json";
 var ConfigService = class {
   async getLocalPath() {
     const dir = await getVemDir();
-    return path7.join(dir, CONFIG_FILE);
+    return path10.join(dir, CONFIG_FILE);
   }
   getGlobalPath() {
-    return path7.join(homedir(), ".vem", CONFIG_FILE);
+    return path10.join(homedir(), ".vem", CONFIG_FILE);
   }
   async readLocalConfig() {
     try {
       const filePath = await this.getLocalPath();
-      if (!await fs7.pathExists(filePath))
+      if (!await fs10.pathExists(filePath))
         return {};
-      return fs7.readJson(filePath);
+      return fs10.readJson(filePath);
     } catch {
       return {};
     }
@@ -15547,9 +15921,9 @@ var ConfigService = class {
   async readGlobalConfig() {
     try {
       const filePath = this.getGlobalPath();
-      if (!await fs7.pathExists(filePath))
+      if (!await fs10.pathExists(filePath))
         return {};
-      return fs7.readJson(filePath);
+      return fs10.readJson(filePath);
     } catch {
       return {};
     }
@@ -15561,6 +15935,7 @@ var ConfigService = class {
     const clean = {
       last_version: next.last_version,
       project_id: next.project_id,
+      project_name: next.project_name,
       project_org_id: next.project_org_id,
       linked_remote_name: next.linked_remote_name,
       linked_remote_url: next.linked_remote_url,
@@ -15568,7 +15943,7 @@ var ConfigService = class {
       last_push_vem_hash: next.last_push_vem_hash,
       last_synced_vem_hash: next.last_synced_vem_hash
     };
-    await fs7.outputJson(filePath, clean, { spaces: 2 });
+    await fs10.outputJson(filePath, clean, { spaces: 2 });
   }
   async writeGlobalConfig(update) {
     const filePath = this.getGlobalPath();
@@ -15579,7 +15954,7 @@ var ConfigService = class {
       device_id: next.device_id,
       device_name: next.device_name
     };
-    await fs7.outputJson(filePath, clean, { spaces: 2 });
+    await fs10.outputJson(filePath, clean, { spaces: 2 });
   }
   // --- Global Scoped ---
   async getApiKey() {
@@ -15661,6 +16036,13 @@ var ConfigService = class {
   async setProjectId(projectId) {
     await this.writeLocalConfig({ project_id: projectId || void 0 });
   }
+  async getProjectName() {
+    const config2 = await this.readLocalConfig();
+    return config2.project_name;
+  }
+  async setProjectName(name) {
+    await this.writeLocalConfig({ project_name: name || void 0 });
+  }
   async setProjectOrgId(orgId) {
     await this.writeLocalConfig({ project_org_id: orgId || void 0 });
   }
@@ -15674,23 +16056,23 @@ var ConfigService = class {
   async getContextPath() {
     try {
       const dir = await getVemDir();
-      return path7.join(dir, CONTEXT_FILE);
+      return path10.join(dir, CONTEXT_FILE);
     } catch {
       return "";
     }
   }
   async getContext() {
     const filePath = await this.getContextPath();
-    if (!filePath || !await fs7.pathExists(filePath)) {
+    if (!filePath || !await fs10.pathExists(filePath)) {
       return "";
     }
-    return fs7.readFile(filePath, "utf-8");
+    return fs10.readFile(filePath, "utf-8");
   }
   async updateContext(content) {
     const filePath = await this.getContextPath();
     if (!filePath)
       throw new Error("Cannot update context: Not in a git repository.");
-    await fs7.writeFile(filePath, content, "utf-8");
+    await fs10.writeFile(filePath, content, "utf-8");
   }
   async recordDecision(title, context, decision, relatedTasks) {
     const decisionsLog = new ScalableLogService(DECISIONS_DIR);
@@ -15709,8 +16091,8 @@ ${entry}`;
 
 // ../../packages/core/dist/diff.js
 import { createHash } from "crypto";
-import path8 from "path";
-import fs8 from "fs-extra";
+import path11 from "path";
+import fs11 from "fs-extra";
 var DiffService = class {
   async compareWithLastPush(_lastPushData) {
     const vemDir = await getVemDir();
@@ -15720,12 +16102,12 @@ var DiffService = class {
     const decisions = await decisionsService.getAllEntries();
     const changelogService = new ScalableLogService(CHANGELOG_DIR);
     const changelog = await changelogService.getAllEntries();
-    const currentStatePath = path8.join(vemDir, CURRENT_STATE_FILE);
-    const currentStateExists = await fs8.pathExists(currentStatePath);
-    const currentStateContent = currentStateExists ? await fs8.readFile(currentStatePath, "utf-8") : "";
-    const contextPath = path8.join(vemDir, CONTEXT_FILE);
-    const contextExists = await fs8.pathExists(contextPath);
-    const contextContent = contextExists ? await fs8.readFile(contextPath, "utf-8") : "";
+    const currentStatePath = path11.join(vemDir, CURRENT_STATE_FILE);
+    const currentStateExists = await fs11.pathExists(currentStatePath);
+    const currentStateContent = currentStateExists ? await fs11.readFile(currentStatePath, "utf-8") : "";
+    const contextPath = path11.join(vemDir, CONTEXT_FILE);
+    const contextExists = await fs11.pathExists(contextPath);
+    const contextContent = contextExists ? await fs11.readFile(contextPath, "utf-8") : "";
     const result = {
       tasks: {
         added: tasks.filter((t) => t.status !== "done").map((t) => t.id),
@@ -15759,8 +16141,8 @@ var DiffService = class {
 };
 
 // ../../packages/core/dist/doctor.js
-import path9 from "path";
-import fs9 from "fs-extra";
+import path12 from "path";
+import fs12 from "fs-extra";
 var DoctorService = class {
   configService = new ConfigService();
   taskService = new TaskService();
@@ -15855,7 +16237,7 @@ var DoctorService = class {
   async checkVemDirectory() {
     try {
       const vemDir = await getVemDir();
-      const exists = await fs9.pathExists(vemDir);
+      const exists = await fs12.pathExists(vemDir);
       if (!exists) {
         return {
           name: ".vem Directory",
@@ -15865,12 +16247,12 @@ var DoctorService = class {
           autoFixable: true
         };
       }
-      const tasksDir = path9.join(vemDir, TASKS_DIR);
-      const decisionsDir = path9.join(vemDir, DECISIONS_DIR);
-      const changelogDir = path9.join(vemDir, CHANGELOG_DIR);
-      const tasksDirExists = await fs9.pathExists(tasksDir);
-      const decisionsDirExists = await fs9.pathExists(decisionsDir);
-      const changelogDirExists = await fs9.pathExists(changelogDir);
+      const tasksDir = path12.join(vemDir, TASKS_DIR);
+      const decisionsDir = path12.join(vemDir, DECISIONS_DIR);
+      const changelogDir = path12.join(vemDir, CHANGELOG_DIR);
+      const tasksDirExists = await fs12.pathExists(tasksDir);
+      const decisionsDirExists = await fs12.pathExists(decisionsDir);
+      const changelogDirExists = await fs12.pathExists(changelogDir);
       if (!tasksDirExists || !decisionsDirExists || !changelogDirExists) {
         return {
           name: ".vem Directory",
@@ -15897,10 +16279,10 @@ var DoctorService = class {
   async checkRequiredFiles() {
     try {
       const vemDir = await getVemDir();
-      const contextPath = path9.join(vemDir, CONTEXT_FILE);
-      const currentStatePath = path9.join(vemDir, CURRENT_STATE_FILE);
-      const contextExists = await fs9.pathExists(contextPath);
-      const currentStateExists = await fs9.pathExists(currentStatePath);
+      const contextPath = path12.join(vemDir, CONTEXT_FILE);
+      const currentStatePath = path12.join(vemDir, CURRENT_STATE_FILE);
+      const contextExists = await fs12.pathExists(contextPath);
+      const currentStateExists = await fs12.pathExists(currentStatePath);
       if (!contextExists || !currentStateExists) {
         return {
           name: "Required Files",
@@ -16356,6 +16738,117 @@ function maskProviderKey(plaintext) {
   return `${plaintext.slice(0, 10)}***`;
 }
 
+// ../../packages/core/dist/SensorsService.js
+import { execSync as execSync3 } from "child_process";
+import path13 from "path";
+import fs13 from "fs-extra";
+var SENSORS_FILE = "sensors.json";
+var SensorsService = class {
+  async getSensorsPath() {
+    const vemDir = await getVemDir();
+    return path13.join(vemDir, SENSORS_FILE);
+  }
+  async readConfig() {
+    const filePath = await this.getSensorsPath();
+    if (!await fs13.pathExists(filePath)) {
+      return { sensors: [] };
+    }
+    try {
+      const raw = await fs13.readJson(filePath);
+      if (Array.isArray(raw?.sensors)) {
+        return { sensors: raw.sensors };
+      }
+      return { sensors: [] };
+    } catch {
+      return { sensors: [] };
+    }
+  }
+  async writeConfig(config2) {
+    const filePath = await this.getSensorsPath();
+    await fs13.writeJson(filePath, config2, { spaces: 2 });
+  }
+  async addSensor(sensor) {
+    const config2 = await this.readConfig();
+    const existing = config2.sensors.findIndex((s) => s.name === sensor.name);
+    if (existing !== -1) {
+      config2.sensors[existing] = sensor;
+    } else {
+      config2.sensors.push(sensor);
+    }
+    await this.writeConfig(config2);
+  }
+  async removeSensor(name) {
+    const config2 = await this.readConfig();
+    const before = config2.sensors.length;
+    config2.sensors = config2.sensors.filter((s) => s.name !== name);
+    if (config2.sensors.length < before) {
+      await this.writeConfig(config2);
+      return true;
+    }
+    return false;
+  }
+  async runSensor(sensor, cwd) {
+    const start = Date.now();
+    let output = "";
+    let exitCode = 0;
+    let passed = true;
+    try {
+      output = execSync3(sensor.cmd, {
+        cwd: cwd ?? process.cwd(),
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 12e4
+      }).toString();
+    } catch (err) {
+      passed = false;
+      if (err && typeof err === "object" && "stdout" in err) {
+        const e = err;
+        output = [
+          typeof e.stdout === "string" ? e.stdout : e.stdout?.toString() ?? "",
+          typeof e.stderr === "string" ? e.stderr : e.stderr?.toString() ?? ""
+        ].filter(Boolean).join("\n");
+        exitCode = e.status ?? 1;
+      } else {
+        output = err instanceof Error ? err.message : String(err);
+        exitCode = 1;
+      }
+    }
+    return {
+      name: sensor.name,
+      cmd: sensor.cmd,
+      passed,
+      exitCode,
+      output: output.trim().slice(0, 4e3),
+      durationMs: Date.now() - start,
+      ranAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  async runSensors(names, cwd) {
+    const config2 = await this.readConfig();
+    const toRun = names ? config2.sensors.filter((s) => names.includes(s.name)) : config2.sensors;
+    const results = [];
+    for (const sensor of toRun) {
+      results.push(await this.runSensor(sensor, cwd));
+    }
+    return results;
+  }
+  formatResultsForAgent(results) {
+    if (results.length === 0)
+      return "No sensors configured.";
+    const lines = results.map((r) => {
+      const status = r.passed ? "\u2713" : "\u2717";
+      const duration3 = `${r.durationMs}ms`;
+      if (r.passed) {
+        return `${status} ${r.name}: passed (${duration3})`;
+      }
+      const snippet = r.output.split("\n").filter((l) => l.trim()).slice(0, 5).join(" | ");
+      return `${status} ${r.name}: FAILED (exit ${r.exitCode}, ${duration3})
+  ${snippet}`;
+    });
+    return lines.join("\n");
+  }
+};
+
 // ../../packages/core/dist/secrets.js
 import { createHash as createHash2, timingSafeEqual } from "crypto";
 function bearerSecretMatches(token, secret) {
@@ -16441,8 +16934,8 @@ function detectSecrets(input) {
 
 // ../../packages/core/dist/sync.js
 import { createHash as createHash3 } from "crypto";
-import path10 from "path";
-import fs10 from "fs-extra";
+import path14 from "path";
+import fs14 from "fs-extra";
 var KNOWN_AGENT_INSTRUCTION_FILES = [
   "AGENTS.md",
   "CLAUDE.md",
@@ -16459,7 +16952,7 @@ function normalizeInstructionPath(value) {
   const normalized = value.trim().replace(/\\/g, "/");
   if (!normalized)
     return null;
-  const collapsed = path10.posix.normalize(normalized);
+  const collapsed = path14.posix.normalize(normalized);
   if (collapsed === "." || collapsed === ".." || collapsed.startsWith("../") || collapsed.startsWith("/")) {
     return null;
   }
@@ -16550,29 +17043,29 @@ var SyncService = class {
   changelogLog = new ScalableLogService(CHANGELOG_DIR);
   async getQueueDir() {
     const dir = await getVemDir();
-    const queueDir = path10.join(dir, "queue");
-    await fs10.ensureDir(queueDir);
+    const queueDir = path14.join(dir, "queue");
+    await fs14.ensureDir(queueDir);
     return queueDir;
   }
   async getContextPath() {
     const dir = await getVemDir();
-    return path10.join(dir, CONTEXT_FILE);
+    return path14.join(dir, CONTEXT_FILE);
   }
   async getCurrentStatePath() {
     const dir = await getVemDir();
-    return path10.join(dir, CURRENT_STATE_FILE);
+    return path14.join(dir, CURRENT_STATE_FILE);
   }
   async collectAgentInstructionFiles() {
     const repoRoot = await getRepoRoot();
     const files = [];
     for (const relativePath of KNOWN_AGENT_INSTRUCTION_FILES) {
-      const absolutePath = path10.join(repoRoot, relativePath);
-      if (!await fs10.pathExists(absolutePath))
+      const absolutePath = path14.join(repoRoot, relativePath);
+      if (!await fs14.pathExists(absolutePath))
         continue;
-      const stat = await fs10.stat(absolutePath);
+      const stat = await fs14.stat(absolutePath);
       if (!stat.isFile())
         continue;
-      const content = await fs10.readFile(absolutePath, "utf-8");
+      const content = await fs14.readFile(absolutePath, "utf-8");
       files.push({ path: relativePath, content });
     }
     return files;
@@ -16581,19 +17074,19 @@ var SyncService = class {
     if (!Array.isArray(entries) || entries.length === 0)
       return;
     const repoRoot = await getRepoRoot();
-    const resolvedRoot = path10.resolve(repoRoot);
+    const resolvedRoot = path14.resolve(repoRoot);
     for (const entry of entries) {
       const normalizedPath = normalizeInstructionPath(entry?.path);
       if (!normalizedPath)
         continue;
       if (typeof entry.content !== "string")
         continue;
-      const destination = path10.resolve(repoRoot, normalizedPath);
-      if (destination !== resolvedRoot && !destination.startsWith(`${resolvedRoot}${path10.sep}`)) {
+      const destination = path14.resolve(repoRoot, normalizedPath);
+      if (destination !== resolvedRoot && !destination.startsWith(`${resolvedRoot}${path14.sep}`)) {
         continue;
       }
-      await fs10.ensureDir(path10.dirname(destination));
-      await fs10.writeFile(destination, entry.content, "utf-8");
+      await fs14.ensureDir(path14.dirname(destination));
+      await fs14.writeFile(destination, entry.content, "utf-8");
     }
   }
   async pack() {
@@ -16605,25 +17098,25 @@ var SyncService = class {
       includeCommitHashes: true
     });
     const secretMatches = [];
-    const addSecretMatch = (path11, value) => {
+    const addSecretMatch = (path16, value) => {
       if (!value)
         return;
       const types = detectSecrets(value);
       if (types.length > 0) {
-        secretMatches.push({ path: path11, types });
+        secretMatches.push({ path: path16, types });
       }
     };
     const contextPath = await this.getContextPath();
     let context = "";
-    if (await fs10.pathExists(contextPath)) {
-      const raw = await fs10.readFile(contextPath, "utf-8");
+    if (await fs14.pathExists(contextPath)) {
+      const raw = await fs14.readFile(contextPath, "utf-8");
       addSecretMatch(".vem/CONTEXT.md", raw);
       context = redactSecrets(raw);
     }
     const currentStatePath = await this.getCurrentStatePath();
     let currentState = "";
-    if (await fs10.pathExists(currentStatePath)) {
-      const raw = await fs10.readFile(currentStatePath, "utf-8");
+    if (await fs14.pathExists(currentStatePath)) {
+      const raw = await fs14.readFile(currentStatePath, "utf-8");
       addSecretMatch(".vem/CURRENT_STATE.md", raw);
       currentState = redactSecrets(raw);
     }
@@ -16743,7 +17236,7 @@ ${body}`;
   }
   async unpack(payload) {
     const vemDir = await getVemDir();
-    await fs10.ensureDir(vemDir);
+    await fs14.ensureDir(vemDir);
     const { storage, index } = await this.taskService.init();
     const taskIds = await storage.listIds();
     for (const id of taskIds) {
@@ -16763,7 +17256,7 @@ ${body}`;
     }
     await index.save(newIndexEntries);
     const contextPath = await this.getContextPath();
-    await fs10.writeFile(contextPath, payload.context, "utf-8");
+    await fs14.writeFile(contextPath, payload.context, "utf-8");
     if (payload.decisions) {
       await this.decisionsLog.addEntry("Imported from Sync", payload.decisions);
     }
@@ -16771,24 +17264,24 @@ ${body}`;
       await this.changelogLog.addEntry("Imported from Sync", payload.changelog);
     }
     const currentStatePath = await this.getCurrentStatePath();
-    await fs10.writeFile(currentStatePath, payload.current_state ?? "", "utf-8");
+    await fs14.writeFile(currentStatePath, payload.current_state ?? "", "utf-8");
     await this.unpackAgentInstructionFiles(payload.agent_instructions);
   }
   async enqueue(payload) {
     const queueDir = await this.getQueueDir();
     const id = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}.json`;
-    const filePath = path10.join(queueDir, id);
-    await fs10.writeJson(filePath, payload, { spaces: 2 });
+    const filePath = path14.join(queueDir, id);
+    await fs14.writeJson(filePath, payload, { spaces: 2 });
     return id;
   }
   async getQueue() {
     const queueDir = await this.getQueueDir();
-    const files = await fs10.readdir(queueDir);
+    const files = await fs14.readdir(queueDir);
     const queue = [];
     for (const file2 of files) {
       if (file2.endsWith(".json")) {
         try {
-          const payload = await fs10.readJson(path10.join(queueDir, file2));
+          const payload = await fs14.readJson(path14.join(queueDir, file2));
           queue.push({ id: file2, payload });
         } catch (error48) {
           console.error(`Error reading queued snapshot ${file2}:`, error48);
@@ -16799,9 +17292,9 @@ ${body}`;
   }
   async removeFromQueue(id) {
     const queueDir = await this.getQueueDir();
-    const filePath = path10.join(queueDir, id);
-    if (await fs10.pathExists(filePath)) {
-      await fs10.remove(filePath);
+    const filePath = path14.join(queueDir, id);
+    if (await fs14.pathExists(filePath)) {
+      await fs14.remove(filePath);
     }
   }
 };
@@ -16826,7 +17319,7 @@ async function sendTelegramAlert(botToken, chatId, message) {
 
 // ../../packages/core/dist/usage-metrics.js
 import { join } from "path";
-import fs11 from "fs-extra";
+import fs15 from "fs-extra";
 var UsageMetricsService = class _UsageMetricsService {
   metricsPath = null;
   /**
@@ -17024,8 +17517,8 @@ var UsageMetricsService = class _UsageMetricsService {
   async loadMetrics() {
     try {
       const metricsPath = await this.getMetricsPath();
-      if (await fs11.pathExists(metricsPath)) {
-        const content = await fs11.readFile(metricsPath, "utf-8");
+      if (await fs15.pathExists(metricsPath)) {
+        const content = await fs15.readFile(metricsPath, "utf-8");
         return JSON.parse(content);
       }
     } catch (_error) {
@@ -17044,7 +17537,7 @@ var UsageMetricsService = class _UsageMetricsService {
    */
   async saveMetrics(data) {
     const metricsPath = await this.getMetricsPath();
-    await fs11.writeFile(metricsPath, JSON.stringify(data, null, 2), "utf-8");
+    await fs15.writeFile(metricsPath, JSON.stringify(data, null, 2), "utf-8");
   }
   isCloudSyncEnabled() {
     const disabled = (process.env.VEM_DISABLE_METRICS || "").toLowerCase();
@@ -17056,6 +17549,51 @@ var UsageMetricsService = class _UsageMetricsService {
       return false;
     }
     return true;
+  }
+};
+
+// ../../packages/core/dist/ValidationRulesService.js
+import path15 from "path";
+import fs16 from "fs-extra";
+var VALIDATION_RULES_FILE = "validation-rules.json";
+var DEFAULTS = {
+  require_evidence_on_done: true,
+  require_all_tasks_done_to_close: false,
+  run_sensors_on_validate: true,
+  trigger_ai_review_on_close: false,
+  require_no_blocked_tasks: true,
+  strict_mode: false,
+  preferred_backend: "local"
+};
+var ValidationRulesService = class {
+  async getRulesPath() {
+    const vemDir = await getVemDir();
+    return path15.join(vemDir, VALIDATION_RULES_FILE);
+  }
+  async readRules() {
+    const filePath = await this.getRulesPath();
+    if (!await fs16.pathExists(filePath)) {
+      return { ...DEFAULTS };
+    }
+    try {
+      const raw = await fs16.readJson(filePath);
+      return { ...DEFAULTS, ...raw };
+    } catch {
+      return { ...DEFAULTS };
+    }
+  }
+  async writeRules(rules) {
+    const current = await this.readRules();
+    const updated = { ...current, ...rules };
+    const filePath = await this.getRulesPath();
+    await fs16.writeJson(filePath, updated, { spaces: 2 });
+    return updated;
+  }
+  async ensureDefaultsFile() {
+    const filePath = await this.getRulesPath();
+    if (!await fs16.pathExists(filePath)) {
+      await fs16.writeJson(filePath, DEFAULTS, { spaces: 2 });
+    }
   }
 };
 
@@ -17640,6 +18178,10 @@ export {
   fromCopilotSession,
   listAllAgentSessions,
   computeSessionStats,
+  CONSTITUTION_FILE,
+  ConstitutionService,
+  CycleRetrospectiveService,
+  CycleValidationService,
   CONFIG_FILE,
   ConfigService,
   DiffService,
@@ -17665,6 +18207,8 @@ export {
   encryptProviderKey,
   decryptProviderKey,
   maskProviderKey,
+  SENSORS_FILE,
+  SensorsService,
   bearerSecretMatches,
   redactSecrets,
   detectSecrets,
@@ -17673,9 +18217,11 @@ export {
   SyncService,
   sendTelegramAlert,
   UsageMetricsService,
+  VALIDATION_RULES_FILE,
+  ValidationRulesService,
   validatePasswordStrength,
   validateWebhookUrl,
   WebhookService,
   WorkflowGuideService
 };
-//# sourceMappingURL=chunk-N6MJE6I4.js.map
+//# sourceMappingURL=chunk-IEMRECBG.js.map

@@ -6,12 +6,15 @@ import {
 	applyVemUpdate,
 	CHANGELOG_DIR,
 	ConfigService,
+	ConstitutionService,
 	computeSnapshotHash,
 	DECISIONS_DIR,
 	ensureVemFiles,
 	formatVemPack,
 	parseVemUpdateBlock,
 	ScalableLogService,
+	SensorsService,
+	ValidationRulesService,
 } from "@vem/core";
 import { VemReviewSchema } from "@vem/schemas";
 import chalk from "chalk";
@@ -288,6 +291,33 @@ export function registerSyncCommands(program: Command) {
 						} catch {
 							// No skills-lock.json or sync failed — soft failure
 						}
+					}
+
+					// Sync vem config (constitution, validation_rules, sensors_config) — soft failure
+					try {
+						const [constitutionContent, validationRules, sensorsConfig] =
+							await Promise.all([
+								new ConstitutionService().get(),
+								new ValidationRulesService().readRules(),
+								new SensorsService().readConfig(),
+							]);
+						const apiKey = await configService.getApiKey();
+						const deviceHeaders = await buildDeviceHeaders(configService);
+						await fetch(`${API_URL}/projects/${projectId}/vem-config`, {
+							method: "PATCH",
+							headers: {
+								"Content-Type": "application/json",
+								Authorization: `Bearer ${apiKey}`,
+								...deviceHeaders,
+							},
+							body: JSON.stringify({
+								constitution_content: constitutionContent,
+								validation_rules: validationRules,
+								sensors_config: sensorsConfig,
+							}),
+						});
+					} catch {
+						// Soft failure — don't block push on vem-config sync
 					}
 
 					// Show workflow hint

@@ -1,4 +1,12 @@
-import { ConfigService } from "@vem/core";
+import {
+	ConfigService,
+	CycleRetrospectiveService,
+	CycleValidationService,
+	DECISIONS_DIR,
+	ScalableLogService,
+	SensorsService,
+	ValidationRulesService,
+} from "@vem/core";
 import type { Cycle } from "@vem/schemas";
 import chalk from "chalk";
 import Table from "cli-table3";
@@ -12,6 +20,29 @@ import {
 	trackCommandUsage,
 	tryAuthenticatedKey,
 } from "../runtime.js";
+
+const validationService = new CycleValidationService();
+const retroService = new CycleRetrospectiveService();
+const sensorsService = new SensorsService();
+const rulesService = new ValidationRulesService();
+const decisionsLog = new ScalableLogService(DECISIONS_DIR);
+
+/** Load decisions from .vem/decisions/ and parse enforcement_pattern from markdown content */
+async function loadDecisionsForDrift(): Promise<
+	Array<{ id: string; title: string; enforcement_pattern?: string }>
+> {
+	const entries = await decisionsLog.getAllEntries();
+	return entries
+		.map((entry) => {
+			const match = entry.content.match(/^enforcement_pattern:\s*(.+)$/m);
+			return {
+				id: entry.id,
+				title: entry.title,
+				enforcement_pattern: match ? match[1].trim() : undefined,
+			};
+		})
+		.filter((d) => d.enforcement_pattern !== undefined);
+}
 
 const APPETITE_LABELS: Record<string, string> = {
 	small: "~1 week",
@@ -92,8 +123,10 @@ function normalizeRemoteCycle(input: unknown): Cycle | null {
 	const appetite =
 		appetiteRaw && VALID_APPETITES.has(appetiteRaw) ? appetiteRaw : undefined;
 	const now = new Date().toISOString();
+	const dbId = asTrimmedString(record.db_id);
 	return {
 		id,
+		...(dbId ? { db_id: dbId } : {}),
 		name,
 		goal,
 		appetite: appetite as Cycle["appetite"],
@@ -688,103 +721,269 @@ export function registerCycleCommands(program: Command) {
 
 	cycleCmd
 		.command("close <id>")
-		.description("Close a cycle")
-		.action(async (id) => {
+		.description(
+			"Close a cycle (runs pre-flight validation and generates retrospective)",
+		)
+		.option("--strict", "Abort close if pre-flight validation fails")
+		.option("--force", "Skip pre-flight validation and close immediately")
+		.action(async (id, options: { strict?: boolean; force?: boolean }) => {
 			await trackCommandUsage("cycle close");
 			try {
+				// ── Phase 0: Load cycle + tasks (needed for pre-flight + retro) ──────
 				const remoteAuth = await resolveRemoteAuth();
+
+				let preflightTasks: Array<{
+					id: string;
+					title: string;
+					status: string;
+					evidence?: string;
+					blocked_reason?: string;
+				}> = [];
+
+				let remoteCycleData: Awaited<ReturnType<typeof getRemoteCycle>> | null =
+					null;
+				let remoteTasksData: Awaited<
+					ReturnType<typeof getRemoteCycleTasks>
+				> | null = null;
+
 				if (remoteAuth) {
-					const cycleResult = await getRemoteCycle(remoteAuth, id);
-					if (cycleResult.ok) {
-						if (cycleResult.data.status === "closed") {
+					remoteCycleData = await getRemoteCycle(remoteAuth, id);
+					if (!remoteCycleData.ok) {
+						if (remoteCycleData.reason === "project_missing") {
+							showProjectMissingMessage();
+							process.exitCode = 1;
+							return;
+						}
+						if (remoteCycleData.status === 404) {
+							console.error(chalk.red(`\n✖ Cycle ${id} not found.\n`));
+							process.exitCode = 1;
+							return;
+						}
+						warnFallbackToLocal(remoteCycleData.message);
+						remoteCycleData = null;
+					} else {
+						if (remoteCycleData.data.status === "closed") {
 							console.log(chalk.yellow(`\n  Cycle ${id} is already closed.\n`));
 							return;
 						}
-						const remoteClose = await updateRemoteCycleStatus(
-							remoteAuth,
-							id,
-							"closed",
-						);
-						if (remoteClose.ok) {
-							await cacheRemoteCycle(remoteClose.data);
-							const updated = remoteClose.data;
-							console.log(chalk.green(`\n✔ Cycle ${updated.id} closed\n`));
-							const remoteTasks = await getRemoteCycleTasks(remoteAuth, id);
-							if (remoteTasks.ok && remoteTasks.data.length > 0) {
-								const done = remoteTasks.data.filter(
-									(task) => task.status === "done",
-								).length;
-								const total = remoteTasks.data.length;
-								console.log(
-									`  ${chalk.gray("Tasks:")} ${chalk.green(String(done))} done / ${chalk.white(String(total))} total`,
-								);
-							}
-							if (updated.closed_at) {
-								console.log(
-									chalk.gray(
-										`  Closed: ${new Date(updated.closed_at).toLocaleDateString()}\n`,
-									),
-								);
-							} else {
-								console.log();
-							}
-							return;
+						remoteTasksData = await getRemoteCycleTasks(remoteAuth, id);
+						if (remoteTasksData.ok) {
+							preflightTasks = remoteTasksData.data.map((t) => ({
+								id: t.id,
+								title: t.title,
+								status: t.status,
+								evidence: undefined,
+							}));
 						}
+					}
+				}
+
+				// Local cycle lookup if no remote
+				let localCycle: Awaited<ReturnType<typeof cycleService.getCycle>> =
+					null;
+				let localTasksForCycle: Awaited<
+					ReturnType<typeof taskService.getTasks>
+				> = [];
+				if (!remoteCycleData?.ok) {
+					localCycle = await cycleService.getCycle(id);
+					if (!localCycle) {
+						console.error(chalk.red(`\n✖ Cycle ${id} not found.\n`));
+						process.exitCode = 1;
+						return;
+					}
+					if (localCycle.status === "closed") {
+						console.log(chalk.yellow(`\n  Cycle ${id} is already closed.\n`));
+						return;
+					}
+					const allTasks = await taskService.getTasks();
+					localTasksForCycle = allTasks.filter(
+						(t) => t.cycle_id === id && !t.deleted_at,
+					);
+					preflightTasks = localTasksForCycle.map((t) => ({
+						id: t.id,
+						title: t.title,
+						status: t.status,
+						evidence: t.evidence ?? undefined,
+					}));
+				}
+
+				// ── Phase 1: Pre-flight (before close) ─────────────────────────────
+				let preflightPassed = true;
+				if (!options.force && preflightTasks.length > 0) {
+					const rules = await rulesService.readRules();
+					console.log(chalk.gray("\n  Running pre-flight checks..."));
+					const decisions = await loadDecisionsForDrift();
+					const preflight = await validationService.runPreflight(
+						preflightTasks,
+						[],
+						decisions,
+						validationService.getGitDiffSince(),
+						rules,
+					);
+
+					const hasErrors = preflight.errors.length > 0;
+					const hasWarnings = preflight.warnings.length > 0;
+					const overallStatus = hasErrors
+						? "fail"
+						: hasWarnings
+							? "warn"
+							: "pass";
+
+					const statusDisplay = {
+						pass: chalk.green("PASS"),
+						warn: chalk.yellow("WARN"),
+						fail: chalk.red("FAIL"),
+					}[overallStatus];
+					console.log(`  Pre-flight: ${statusDisplay}`);
+
+					if (hasErrors) {
+						for (const err of preflight.errors) {
+							console.log(`    ${chalk.red("✗")} ${err}`);
+						}
+					} else if (hasWarnings) {
+						for (const w of preflight.warnings.slice(0, 5)) {
+							console.log(`    ${chalk.yellow("⚠")} ${w}`);
+						}
+					}
+
+					if (options.strict && hasErrors) {
+						console.error(
+							chalk.red(
+								`\n  ✖ Pre-flight failed. Fix errors or use --force to skip.\n`,
+							),
+						);
+						process.exitCode = 1;
+						return;
+					}
+					preflightPassed = overallStatus === "pass";
+				}
+
+				// ── Phase 2: Close the cycle ────────────────────────────────────────
+				let closedAt: string | null = null;
+				const cycleName = remoteCycleData?.ok
+					? remoteCycleData.data.name
+					: (localCycle?.name ?? id);
+				const cycleGoal = remoteCycleData?.ok
+					? (remoteCycleData.data.goal ?? "")
+					: (localCycle?.goal ?? "");
+				const appetite = remoteCycleData?.ok
+					? (remoteCycleData.data.appetite ?? "medium")
+					: (localCycle?.appetite ?? "medium");
+				const startedAt = remoteCycleData?.ok
+					? remoteCycleData.data.created_at
+					: (localCycle?.created_at ?? new Date().toISOString());
+
+				if (remoteCycleData?.ok && remoteAuth) {
+					const remoteClose = await updateRemoteCycleStatus(
+						remoteAuth,
+						id,
+						"closed",
+					);
+					if (remoteClose.ok) {
+						await cacheRemoteCycle(remoteClose.data);
+						closedAt = remoteClose.data.closed_at ?? new Date().toISOString();
+						console.log(
+							chalk.green(`\n✔ Cycle ${remoteClose.data.id} closed\n`),
+						);
+						if (remoteTasksData?.ok && remoteTasksData.data.length > 0) {
+							const done = remoteTasksData.data.filter(
+								(t) => t.status === "done",
+							).length;
+							const total = remoteTasksData.data.length;
+							console.log(
+								`  ${chalk.gray("Tasks:")} ${chalk.green(String(done))} done / ${chalk.white(String(total))} total`,
+							);
+						}
+						console.log(
+							chalk.gray(
+								`  Closed: ${new Date(closedAt).toLocaleDateString()}\n`,
+							),
+						);
+					} else {
 						if (remoteClose.reason === "project_missing") {
 							showProjectMissingMessage();
 							process.exitCode = 1;
 							return;
 						}
 						warnFallbackToLocal(remoteClose.message);
-					} else if (cycleResult.reason === "project_missing") {
-						showProjectMissingMessage();
-						process.exitCode = 1;
-						return;
-					} else if (cycleResult.status === 404) {
-						console.error(chalk.red(`\n✖ Cycle ${id} not found.\n`));
-						process.exitCode = 1;
-						return;
-					} else {
-						warnFallbackToLocal(cycleResult.message);
+						// fall through to local
 					}
 				}
 
-				const cycle = await cycleService.getCycle(id);
-				if (!cycle) {
-					console.error(chalk.red(`\n✖ Cycle ${id} not found.\n`));
-					process.exitCode = 1;
-					return;
-				}
-				if (cycle.status === "closed") {
-					console.log(chalk.yellow(`\n  Cycle ${id} is already closed.\n`));
-					return;
-				}
-				const updated = await cycleService.updateCycle(id, {
-					status: "closed",
-				});
-				console.log(chalk.green(`\n✔ Cycle ${id} closed\n`));
-
-				const tasks = await taskService.getTasks();
-				const cycleTasks = tasks.filter(
-					(task) => task.cycle_id === id && !task.deleted_at,
-				);
-				if (cycleTasks.length > 0) {
-					const done = cycleTasks.filter(
-						(task) => task.status === "done",
-					).length;
-					const total = cycleTasks.length;
-					console.log(
-						`  ${chalk.gray("Tasks:")} ${chalk.green(String(done))} done / ${chalk.white(String(total))} total`,
-					);
-				}
-				if (updated.closed_at) {
+				if (!closedAt && localCycle) {
+					const updated = await cycleService.updateCycle(id, {
+						status: "closed",
+					});
+					closedAt = updated.closed_at ?? new Date().toISOString();
+					console.log(chalk.green(`\n✔ Cycle ${id} closed\n`));
+					if (localTasksForCycle.length > 0) {
+						const done = localTasksForCycle.filter(
+							(t) => t.status === "done",
+						).length;
+						const total = localTasksForCycle.length;
+						console.log(
+							`  ${chalk.gray("Tasks:")} ${chalk.green(String(done))} done / ${chalk.white(String(total))} total`,
+						);
+					}
 					console.log(
 						chalk.gray(
-							`  Closed: ${new Date(updated.closed_at).toLocaleDateString()}\n`,
+							`  Closed: ${new Date(closedAt).toLocaleDateString()}\n`,
 						),
 					);
-				} else {
-					console.log();
+				}
+
+				// ── Phase 3: Retrospective ──────────────────────────────────────────
+				if (closedAt && preflightTasks.length > 0) {
+					try {
+						const retro = retroService.build({
+							cycleId: id,
+							cycleName,
+							cycleGoal,
+							appetite,
+							startedAt:
+								typeof startedAt === "string"
+									? startedAt
+									: new Date().toISOString(),
+							closedAt,
+							tasks: preflightTasks.map((t) => ({
+								id: t.id,
+								title: t.title,
+								status: t.status,
+								evidence: t.evidence ?? undefined,
+								cycle_id: id,
+							})),
+							decisions: [],
+							totalValidationRuns: 0,
+							lastValidationStatus: preflightPassed ? "pass" : "warn",
+							openIssues: 0,
+							resolvedIssues: 0,
+						});
+						// Save to changelog
+						const retroPath = await retroService
+							.saveToChangelog(retro)
+							.catch(() => null);
+						const duration = retro.leadTimeDays ?? 0;
+						const target = retro.targetDays;
+						const variance = target != null ? duration - target : null;
+						const doneCnt = retro.completedTasks.length;
+						const deferCnt = retro.deferredTasks.length;
+						console.log(chalk.bold("  📋 Retrospective Summary\n"));
+						console.log(
+							`  Duration: ${duration} days${target != null ? ` (target: ${target})` : ""}`,
+						);
+						console.log(`  Velocity: ${doneCnt} done / ${deferCnt} deferred`);
+						if (variance !== null) {
+							const sign = variance >= 0 ? "+" : "";
+							const color = variance > 0 ? chalk.yellow : chalk.green;
+							console.log(`  vs appetite: ${color(`${sign}${variance} days`)}`);
+						}
+						if (retroPath) {
+							console.log(chalk.gray(`  Saved: ${retroPath}`));
+						}
+						console.log();
+					} catch {
+						// Retro is non-critical — don't fail the close
+					}
 				}
 			} catch (error) {
 				console.error(
@@ -885,6 +1084,569 @@ export function registerCycleCommands(program: Command) {
 			} catch (error) {
 				console.error(
 					chalk.red(`Failed to show cycle focus: ${getErrorMessage(error)}`),
+				);
+			}
+		});
+
+	cycleCmd
+		.command("validate <id>")
+		.description(
+			"Run full validation for a cycle: pre-flight checks + AI review (Phase 1 + 2)",
+		)
+		.option("--skip-sensors", "Skip feedback sensor checks")
+		.option("--skip-ai", "Skip Phase 2 AI review (pre-flight only)")
+		.option(
+			"--backend <backend>",
+			"Execution backend for AI review: cloud|local (default: from cycle config)",
+		)
+		.option("--strict", "Exit with error code if any check fails or warns")
+		.action(
+			async (
+				id: string,
+				options: {
+					skipSensors?: boolean;
+					skipAi?: boolean;
+					backend?: string;
+					strict?: boolean;
+				},
+			) => {
+				await trackCommandUsage("cycle validate");
+				try {
+					const rules = await rulesService.readRules();
+					const remoteAuth = await resolveRemoteAuth();
+
+					// Resolve cycle UUID upfront (POST /runs requires UUID)
+					let cycleDbId: string | undefined;
+
+					let cycleTasks: Array<{
+						id: string;
+						title: string;
+						status: string;
+						evidence?: string;
+					}> = [];
+
+					if (remoteAuth) {
+						const cycleResult = await getRemoteCycle(remoteAuth, id);
+						if (cycleResult.ok) {
+							cycleDbId = cycleResult.data.db_id;
+						}
+						const tasksResult = await getRemoteCycleTasks(remoteAuth, id);
+						if (tasksResult.ok) {
+							cycleTasks = tasksResult.data.map((t) => ({
+								id: t.id,
+								title: t.title,
+								status: t.status,
+								evidence: undefined,
+							}));
+						}
+					}
+
+					if (cycleTasks.length === 0) {
+						const localTasks = await taskService.getTasks();
+						cycleTasks = localTasks
+							.filter((t) => t.cycle_id === id && !t.deleted_at)
+							.map((t) => ({
+								id: t.id,
+								title: t.title,
+								status: t.status,
+								evidence: t.evidence,
+							}));
+					}
+
+					let sensorResults: import("@vem/core").SensorResult[] = [];
+					if (!options.skipSensors && rules.run_sensors_on_validate) {
+						const config = await sensorsService.readConfig();
+						if (config.sensors.length > 0) {
+							console.log(chalk.gray("  Running sensors..."));
+							sensorResults = await sensorsService.runSensors();
+						}
+					}
+
+					const gitDiff = validationService.getGitDiffSince();
+					const decisions = await loadDecisionsForDrift();
+
+					const preflight = await validationService.runPreflight(
+						cycleTasks,
+						sensorResults,
+						decisions,
+						gitDiff,
+						rules,
+					);
+
+					console.log(chalk.bold(`\n🔍  Preflight Validation: ${id}\n`));
+					console.log(
+						`  ${chalk.gray("Tasks:")} ${chalk.white(String(preflight.doneTasks))}/${chalk.white(String(preflight.totalTasks))} done`,
+					);
+					if (preflight.blockedTasks > 0) {
+						console.log(
+							`  ${chalk.yellow(`⚠  ${preflight.blockedTasks} task(s) blocked`)}`,
+						);
+					}
+
+					if (sensorResults.length > 0) {
+						const passed = sensorResults.filter((r) => r.passed).length;
+						const statusColor =
+							passed === sensorResults.length ? chalk.green : chalk.yellow;
+						console.log(
+							`  ${chalk.gray("Sensors:")} ${statusColor(`${passed}/${sensorResults.length} passed`)}`,
+						);
+						for (const s of sensorResults.filter((r) => !r.passed)) {
+							console.log(
+								`    ${chalk.red("✗")} ${s.name}: exit ${s.exitCode}`,
+							);
+							const lines = s.output
+								.split("\n")
+								.filter((l) => l.trim())
+								.slice(0, 4);
+							for (const line of lines) {
+								console.log(`      ${chalk.gray(line)}`);
+							}
+						}
+					}
+
+					if (preflight.driftViolations.length > 0) {
+						console.log(
+							`  ${chalk.yellow(`⚠  Architecture drift: ${preflight.driftViolations.length} violation(s)`)}`,
+						);
+						for (const v of preflight.driftViolations.slice(0, 3)) {
+							console.log(
+								`    ${chalk.red("✗")} ${chalk.white(v.decisionId)}: ${v.file}:${v.line}`,
+							);
+						}
+					}
+
+					if (preflight.errors.length > 0) {
+						console.log(chalk.red("\n  Errors:"));
+						for (const err of preflight.errors) {
+							console.log(`    ${chalk.red("✗")} ${err}`);
+						}
+					}
+					if (preflight.warnings.length > 0 && preflight.errors.length === 0) {
+						console.log(chalk.yellow("\n  Warnings:"));
+						for (const w of preflight.warnings.slice(0, 5)) {
+							console.log(`    ${chalk.yellow("⚠")} ${w}`);
+						}
+					}
+
+					const overallStatus =
+						preflight.errors.length > 0
+							? "fail"
+							: preflight.warnings.length > 0
+								? "warn"
+								: "pass";
+
+					const statusDisplay = {
+						pass: chalk.green("PASS"),
+						warn: chalk.yellow("WARN"),
+						fail: chalk.red("FAIL"),
+					}[overallStatus];
+
+					console.log(chalk.bold(`\n  Status: ${statusDisplay}\n`));
+
+					await validationService.saveReport({
+						cycleId: id,
+						ranAt: new Date().toISOString(),
+						preflight,
+						overallStatus,
+					});
+
+					if (options.strict && overallStatus !== "pass") {
+						process.exitCode = 1;
+						return;
+					}
+
+					// ── Phase 2: AI Review ──────────────────────────────────────────
+					if (!options.skipAi && remoteAuth) {
+						// Build sensor summary to inject into validation_instructions
+						let sensorSummary = "";
+						if (sensorResults.length > 0) {
+							const failedSensors = sensorResults.filter((r) => !r.passed);
+							const passedSensors = sensorResults.filter((r) => r.passed);
+							const lines: string[] = [
+								`\n\n---\n## Pre-flight Sensor Results (${passedSensors.length}/${sensorResults.length} passed)`,
+							];
+							for (const s of sensorResults) {
+								const icon = s.passed ? "✓" : "✗";
+								lines.push(`${icon} ${s.name}: exit ${s.exitCode}`);
+								if (!s.passed) {
+									for (const line of s.output
+										.split("\n")
+										.filter((l) => l.trim())
+										.slice(0, 6)) {
+										lines.push(`  ${line}`);
+									}
+								}
+							}
+							if (failedSensors.length > 0) {
+								lines.push(
+									`\nNote: ${failedSensors.length} sensor(s) failed. Please review the output above.`,
+								);
+							}
+							sensorSummary = lines.join("\n");
+						}
+
+						console.log(chalk.gray("\n  Triggering AI review run..."));
+						try {
+							const backend =
+								options.backend === "cloud" || options.backend === "local"
+									? options.backend
+									: undefined;
+
+							// Use cycle UUID (db_id) for API write operations
+							const cycleUuidForApi = cycleDbId ?? id;
+
+							const runResult = await requestRemoteJson<{
+								run?: { id?: string };
+							}>(
+								remoteAuth,
+								`/projects/${remoteAuth.projectId}/cycles/${cycleUuidForApi}/runs`,
+								{
+									method: "POST",
+									headers: { "Content-Type": "application/json" },
+									body: JSON.stringify({
+										...(sensorSummary
+											? { validation_instructions: sensorSummary }
+											: {}),
+										...(backend ? { execution_backend: backend } : {}),
+									}),
+								},
+							);
+
+							if (runResult.ok) {
+								const runId = runResult.data.run?.id;
+								console.log(
+									chalk.green(
+										`  ✔ AI review run started${runId ? `: ${runId}` : ""}`,
+									),
+								);
+								console.log(
+									chalk.gray(
+										`  View results in the web dashboard or run: vem cycle health ${id}\n`,
+									),
+								);
+
+								// Post preflight summary to the new run so the web UI can display it
+								if (runId) {
+									try {
+										await requestRemoteJson(
+											remoteAuth,
+											`/projects/${remoteAuth.projectId}/cycles/${cycleUuidForApi}/runs/${runId}/preflight`,
+											{
+												method: "PATCH",
+												headers: { "Content-Type": "application/json" },
+												body: JSON.stringify({
+													ranAt: new Date().toISOString(),
+													taskStats: {
+														total: preflight.totalTasks,
+														done: preflight.doneTasks,
+														blocked: preflight.blockedTasks,
+													},
+													sensorResults: sensorResults.map((s) => ({
+														name: s.name,
+														passed: s.passed,
+														exitCode: s.exitCode,
+														output: s.output
+															.split("\n")
+															.filter((l) => l.trim())
+															.slice(0, 10)
+															.join("\n"),
+													})),
+													driftViolations: preflight.driftViolations.map(
+														(v) => ({
+															decision: v.decisionId,
+															pattern: v.pattern ?? "",
+															file: v.file,
+															line: String(v.line),
+															match: v.match,
+														}),
+													),
+												}),
+											},
+										);
+									} catch {
+										// Non-critical — preflight was already saved locally
+									}
+								}
+							} else {
+								console.log(
+									chalk.yellow(
+										`  ⚠ Could not start AI review: ${runResult.message}\n`,
+									),
+								);
+							}
+						} catch (runErr) {
+							console.log(
+								chalk.yellow(
+									`  ⚠ AI review skipped: ${getErrorMessage(runErr)}\n`,
+								),
+							);
+						}
+					} else if (options.skipAi) {
+						console.log(chalk.gray("  AI review skipped (--skip-ai).\n"));
+						// Still store preflight summary to DB so web UI can display it
+						if (remoteAuth && cycleDbId) {
+							try {
+								await requestRemoteJson(
+									remoteAuth,
+									`/projects/${remoteAuth.projectId}/cycles/${cycleDbId}/preflight`,
+									{
+										method: "PATCH",
+										headers: { "Content-Type": "application/json" },
+										body: JSON.stringify({
+											ranAt: new Date().toISOString(),
+											taskStats: {
+												total: preflight.totalTasks,
+												done: preflight.doneTasks,
+												blocked: preflight.blockedTasks,
+											},
+											sensorResults: sensorResults.map((s) => ({
+												name: s.name,
+												passed: s.passed,
+												exitCode: s.exitCode,
+												output: s.output
+													.split("\n")
+													.filter((l) => l.trim())
+													.slice(0, 10)
+													.join("\n"),
+											})),
+											driftViolations: preflight.driftViolations.map((v) => ({
+												decision: v.decisionId,
+												pattern: v.pattern ?? "",
+												file: v.file,
+												line: String(v.line),
+												match: v.match,
+											})),
+										}),
+									},
+								);
+							} catch {
+								// Non-critical — preflight was already saved locally
+							}
+						}
+					} else {
+						console.log(
+							chalk.gray("  Not linked to a project — AI review skipped.\n"),
+						);
+					}
+				} catch (error) {
+					console.error(
+						chalk.red(`Failed to validate cycle: ${getErrorMessage(error)}`),
+					);
+					process.exitCode = 1;
+				}
+			},
+		);
+
+	cycleCmd
+		.command("health [id]")
+		.description("Show health snapshot for the active or given cycle")
+		.action(async (id?: string) => {
+			await trackCommandUsage("cycle health");
+			try {
+				let cycle: {
+					id: string;
+					name: string;
+					goal: string;
+					appetite?: string;
+					start_at?: string;
+				} | null = null;
+				const remoteAuth = await resolveRemoteAuth();
+
+				if (id) {
+					if (remoteAuth) {
+						const result = await getRemoteCycle(remoteAuth, id);
+						if (result.ok) cycle = result.data;
+						else if (result.reason === "project_missing") {
+							showProjectMissingMessage();
+							process.exitCode = 1;
+							return;
+						}
+					}
+					if (!cycle) cycle = await cycleService.getCycle(id);
+				} else {
+					if (remoteAuth) {
+						const result = await getRemoteCycles(remoteAuth);
+						if (result.ok)
+							cycle = result.data.find((c) => c.status === "active") ?? null;
+					}
+					if (!cycle) cycle = await cycleService.getActiveCycle();
+				}
+
+				if (!cycle) {
+					console.log(chalk.yellow("\n  No active cycle found.\n"));
+					return;
+				}
+
+				let tasks: Array<{ id: string; title: string; status: string }> = [];
+				if (remoteAuth) {
+					const tasksResult = await getRemoteCycleTasks(remoteAuth, cycle.id);
+					if (tasksResult.ok) tasks = tasksResult.data;
+				}
+				if (tasks.length === 0) {
+					const localTasks = await taskService.getTasks();
+					tasks = localTasks
+						.filter((t) => t.cycle_id === cycle!.id && !t.deleted_at)
+						.map((t) => ({ id: t.id, title: t.title, status: t.status }));
+				}
+
+				const byStatus = tasks.reduce<Record<string, number>>((acc, t) => {
+					acc[t.status] = (acc[t.status] ?? 0) + 1;
+					return acc;
+				}, {});
+
+				console.log(chalk.bold(`\n🏥  Cycle Health: ${cycle.id}\n`));
+				console.log(`  ${chalk.white(cycle.name)}`);
+				console.log(`  ${chalk.gray("Goal:")} ${cycle.goal}`);
+
+				if (cycle.appetite) {
+					const appetiteDays: Record<string, number> = {
+						small: 7,
+						medium: 14,
+						large: 42,
+					};
+					const target = appetiteDays[cycle.appetite];
+					if (target && cycle.start_at) {
+						const elapsed = Math.round(
+							(Date.now() - new Date(cycle.start_at).getTime()) /
+								(1000 * 60 * 60 * 24),
+						);
+						const pct = Math.min(100, Math.round((elapsed / target) * 100));
+						const bar =
+							"█".repeat(Math.floor(pct / 5)) +
+							"░".repeat(20 - Math.floor(pct / 5));
+						console.log(
+							`  ${chalk.gray("Progress:")} ${bar} ${chalk.white(`${pct}%`)} (day ${elapsed}/${target})`,
+						);
+					}
+				}
+
+				console.log(`\n  ${chalk.bold("Tasks:")}`);
+				for (const [status, count] of Object.entries(byStatus)) {
+					const icon =
+						status === "done"
+							? chalk.green("✓")
+							: status === "blocked"
+								? chalk.red("▲")
+								: status === "in-progress"
+									? chalk.cyan("⬡")
+									: chalk.gray("○");
+					console.log(`    ${icon}  ${count}  ${status}`);
+				}
+
+				const report = await validationService.loadReport(cycle.id);
+				if (report) {
+					const statusDisplay =
+						report.overallStatus === "pass"
+							? chalk.green("PASS")
+							: report.overallStatus === "warn"
+								? chalk.yellow("WARN")
+								: chalk.red("FAIL");
+					console.log(
+						`\n  ${chalk.bold("Last Validation:")} ${statusDisplay} — ${new Date(report.ranAt).toLocaleString()}`,
+					);
+					const pf = report.preflight;
+					if (pf.errors.length > 0) {
+						console.log(chalk.red(`    ✗ ${pf.errors[0]}`));
+					}
+					if (pf.warnings.length > 0) {
+						console.log(
+							chalk.yellow(`    ⚠ ${pf.warnings.slice(0, 2).join(" | ")}`),
+						);
+					}
+				}
+
+				console.log();
+			} catch (error) {
+				console.error(
+					chalk.red(`Failed to get cycle health: ${getErrorMessage(error)}`),
+				);
+			}
+		});
+
+	cycleCmd
+		.command("retrospective <id>")
+		.description("Generate a retrospective for a closed cycle")
+		.action(async (id: string) => {
+			await trackCommandUsage("cycle retrospective");
+			try {
+				const remoteAuth = await resolveRemoteAuth();
+				let cycle: {
+					id: string;
+					name: string;
+					goal: string;
+					appetite?: string;
+					start_at?: string;
+					closed_at?: string;
+				} | null = null;
+
+				if (remoteAuth) {
+					const result = await getRemoteCycle(remoteAuth, id);
+					if (result.ok) cycle = result.data;
+					else if (result.reason === "project_missing") {
+						showProjectMissingMessage();
+						process.exitCode = 1;
+						return;
+					}
+				}
+				if (!cycle) cycle = await cycleService.getCycle(id);
+				if (!cycle) {
+					console.error(chalk.red(`\n✖ Cycle ${id} not found.\n`));
+					process.exitCode = 1;
+					return;
+				}
+
+				const localTasks = await taskService.getTasks();
+				const decisions: Array<{
+					id: string;
+					title: string;
+					created_at?: string;
+				}> = [];
+
+				const retro = retroService.build({
+					cycleId: cycle.id,
+					cycleName: cycle.name,
+					cycleGoal: cycle.goal,
+					appetite: cycle.appetite,
+					startedAt: cycle.start_at,
+					closedAt: cycle.closed_at,
+					tasks: localTasks.map((t) => ({
+						id: t.id,
+						title: t.title,
+						status: t.status,
+						evidence: t.evidence,
+						cycle_id: t.cycle_id,
+						deleted_at: t.deleted_at,
+					})),
+					decisions,
+					totalValidationRuns: 0,
+					lastValidationStatus: undefined,
+					openIssues: 0,
+					resolvedIssues: 0,
+				});
+
+				const filePath = await retroService.saveToChangelog(retro);
+
+				console.log(chalk.bold(`\n📋  Retrospective: ${cycle.name}\n`));
+				console.log(
+					`  ${chalk.gray("Completed:")} ${chalk.green(String(retro.completedTasks.length))} tasks`,
+				);
+				console.log(
+					`  ${chalk.gray("Deferred:")} ${chalk.yellow(String(retro.deferredTasks.length))} tasks`,
+				);
+				if (retro.leadTimeDays !== undefined) {
+					const vs = retro.targetDays
+						? ` (target ${retro.targetDays} days)`
+						: "";
+					console.log(
+						`  ${chalk.gray("Duration:")} ${retro.leadTimeDays} days${vs}`,
+					);
+				}
+				console.log(chalk.gray(`\n  Saved to: ${filePath}\n`));
+			} catch (error) {
+				console.error(
+					chalk.red(
+						`Failed to generate retrospective: ${getErrorMessage(error)}`,
+					),
 				);
 			}
 		});

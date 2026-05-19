@@ -4,13 +4,18 @@ import {
   CONTEXT_FILE,
   CURRENT_STATE_FILE,
   ConfigService,
+  ConstitutionService,
+  CycleRetrospectiveService,
   CycleService,
+  CycleValidationService,
   DECISIONS_DIR,
   KNOWN_AGENT_INSTRUCTION_FILES,
   ScalableLogService,
+  SensorsService,
   SyncService,
   TaskService,
   UsageMetricsService,
+  ValidationRulesService,
   VemReviewSchema,
   WorkflowGuideService,
   applyVemUpdate,
@@ -24,7 +29,7 @@ import {
   isVemInitialized,
   listAllAgentSessions,
   parseVemUpdateBlock
-} from "./chunk-N6MJE6I4.js";
+} from "./chunk-IEMRECBG.js";
 import {
   readCopilotSessionDetail
 } from "./chunk-PO3WNPAJ.js";
@@ -33,7 +38,7 @@ import "./chunk-VL6CJCOB.js";
 import "./chunk-PZ5AY32C.js";
 
 // src/index.ts
-import chalk21 from "chalk";
+import chalk22 from "chalk";
 import { Command } from "commander";
 
 // src/commands/agent.ts
@@ -780,7 +785,7 @@ async function syncProjectMemoryToRemote() {
     const vemDir = await getVemDir();
     const contextPath = join4(vemDir, CONTEXT_FILE);
     const currentStatePath = join4(vemDir, CURRENT_STATE_FILE);
-    const [context, currentState, decisionsLog, changelogLog, taskList] = await Promise.all([
+    const [context, currentState, decisionsLog2, changelogLog, taskList] = await Promise.all([
       readFile3(contextPath, "utf-8").catch(() => ""),
       readFile3(currentStatePath, "utf-8").catch(() => ""),
       new ScalableLogService(DECISIONS_DIR).getMonolithicContent().catch(() => ""),
@@ -806,7 +811,7 @@ async function syncProjectMemoryToRemote() {
       body: JSON.stringify({
         context: context.trim(),
         current_state: currentState.trim(),
-        decisions: decisionsLog.trim(),
+        decisions: decisionsLog2.trim(),
         changelog: changelogLog.trim(),
         ...tasks.length > 0 ? { tasks } : {}
       })
@@ -1167,7 +1172,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
       await updateTaskMetaRemote(configService, activeTask, {
         raw_vem_update: JSON.parse(JSON.stringify(update)),
-        cli_version: "0.1.79",
+        cli_version: "0.1.80",
         ...changelogEntry ? { changelog_entry: changelogEntry } : {}
       });
     }
@@ -1224,7 +1229,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
       ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
       raw_vem_update: JSON.parse(JSON.stringify(update)),
-      cli_version: "0.1.79",
+      cli_version: "0.1.80",
       // Task memory fields — stored in task_memory_entries on the API side.
       ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
       changelog_entry: changelogReasoning ?? null
@@ -2613,6 +2618,22 @@ function registerAuthCommands(program2) {
 // src/commands/cycle.ts
 import chalk9 from "chalk";
 import Table from "cli-table3";
+var validationService = new CycleValidationService();
+var retroService = new CycleRetrospectiveService();
+var sensorsService = new SensorsService();
+var rulesService = new ValidationRulesService();
+var decisionsLog = new ScalableLogService(DECISIONS_DIR);
+async function loadDecisionsForDrift() {
+  const entries = await decisionsLog.getAllEntries();
+  return entries.map((entry) => {
+    const match = entry.content.match(/^enforcement_pattern:\s*(.+)$/m);
+    return {
+      id: entry.id,
+      title: entry.title,
+      enforcement_pattern: match ? match[1].trim() : void 0
+    };
+  }).filter((d) => d.enforcement_pattern !== void 0);
+}
 var APPETITE_LABELS = {
   small: "~1 week",
   medium: "~2 weeks",
@@ -2662,8 +2683,10 @@ function normalizeRemoteCycle(input) {
   const appetiteRaw = asTrimmedString2(record.appetite);
   const appetite = appetiteRaw && VALID_APPETITES.has(appetiteRaw) ? appetiteRaw : void 0;
   const now = (/* @__PURE__ */ new Date()).toISOString();
+  const dbId = asTrimmedString2(record.db_id);
   return {
     id,
+    ...dbId ? { db_id: dbId } : {},
     name,
     goal,
     appetite,
@@ -3173,114 +3196,232 @@ function registerCycleCommands(program2) {
       );
     }
   });
-  cycleCmd.command("close <id>").description("Close a cycle").action(async (id) => {
+  cycleCmd.command("close <id>").description(
+    "Close a cycle (runs pre-flight validation and generates retrospective)"
+  ).option("--strict", "Abort close if pre-flight validation fails").option("--force", "Skip pre-flight validation and close immediately").action(async (id, options) => {
     await trackCommandUsage("cycle close");
     try {
       const remoteAuth = await resolveRemoteAuth();
+      let preflightTasks = [];
+      let remoteCycleData = null;
+      let remoteTasksData = null;
       if (remoteAuth) {
-        const cycleResult = await getRemoteCycle(remoteAuth, id);
-        if (cycleResult.ok) {
-          if (cycleResult.data.status === "closed") {
+        remoteCycleData = await getRemoteCycle(remoteAuth, id);
+        if (!remoteCycleData.ok) {
+          if (remoteCycleData.reason === "project_missing") {
+            showProjectMissingMessage();
+            process.exitCode = 1;
+            return;
+          }
+          if (remoteCycleData.status === 404) {
+            console.error(chalk9.red(`
+\u2716 Cycle ${id} not found.
+`));
+            process.exitCode = 1;
+            return;
+          }
+          warnFallbackToLocal(remoteCycleData.message);
+          remoteCycleData = null;
+        } else {
+          if (remoteCycleData.data.status === "closed") {
             console.log(chalk9.yellow(`
   Cycle ${id} is already closed.
 `));
             return;
           }
-          const remoteClose = await updateRemoteCycleStatus(
-            remoteAuth,
-            id,
-            "closed"
-          );
-          if (remoteClose.ok) {
-            await cacheRemoteCycle(remoteClose.data);
-            const updated2 = remoteClose.data;
-            console.log(chalk9.green(`
-\u2714 Cycle ${updated2.id} closed
-`));
-            const remoteTasks = await getRemoteCycleTasks(remoteAuth, id);
-            if (remoteTasks.ok && remoteTasks.data.length > 0) {
-              const done = remoteTasks.data.filter(
-                (task) => task.status === "done"
-              ).length;
-              const total = remoteTasks.data.length;
-              console.log(
-                `  ${chalk9.gray("Tasks:")} ${chalk9.green(String(done))} done / ${chalk9.white(String(total))} total`
-              );
-            }
-            if (updated2.closed_at) {
-              console.log(
-                chalk9.gray(
-                  `  Closed: ${new Date(updated2.closed_at).toLocaleDateString()}
-`
-                )
-              );
-            } else {
-              console.log();
-            }
-            return;
+          remoteTasksData = await getRemoteCycleTasks(remoteAuth, id);
+          if (remoteTasksData.ok) {
+            preflightTasks = remoteTasksData.data.map((t) => ({
+              id: t.id,
+              title: t.title,
+              status: t.status,
+              evidence: void 0
+            }));
           }
+        }
+      }
+      let localCycle = null;
+      let localTasksForCycle = [];
+      if (!remoteCycleData?.ok) {
+        localCycle = await cycleService.getCycle(id);
+        if (!localCycle) {
+          console.error(chalk9.red(`
+\u2716 Cycle ${id} not found.
+`));
+          process.exitCode = 1;
+          return;
+        }
+        if (localCycle.status === "closed") {
+          console.log(chalk9.yellow(`
+  Cycle ${id} is already closed.
+`));
+          return;
+        }
+        const allTasks = await taskService.getTasks();
+        localTasksForCycle = allTasks.filter(
+          (t) => t.cycle_id === id && !t.deleted_at
+        );
+        preflightTasks = localTasksForCycle.map((t) => ({
+          id: t.id,
+          title: t.title,
+          status: t.status,
+          evidence: t.evidence ?? void 0
+        }));
+      }
+      let preflightPassed = true;
+      if (!options.force && preflightTasks.length > 0) {
+        const rules = await rulesService.readRules();
+        console.log(chalk9.gray("\n  Running pre-flight checks..."));
+        const decisions = await loadDecisionsForDrift();
+        const preflight = await validationService.runPreflight(
+          preflightTasks,
+          [],
+          decisions,
+          validationService.getGitDiffSince(),
+          rules
+        );
+        const hasErrors = preflight.errors.length > 0;
+        const hasWarnings = preflight.warnings.length > 0;
+        const overallStatus = hasErrors ? "fail" : hasWarnings ? "warn" : "pass";
+        const statusDisplay = {
+          pass: chalk9.green("PASS"),
+          warn: chalk9.yellow("WARN"),
+          fail: chalk9.red("FAIL")
+        }[overallStatus];
+        console.log(`  Pre-flight: ${statusDisplay}`);
+        if (hasErrors) {
+          for (const err of preflight.errors) {
+            console.log(`    ${chalk9.red("\u2717")} ${err}`);
+          }
+        } else if (hasWarnings) {
+          for (const w of preflight.warnings.slice(0, 5)) {
+            console.log(`    ${chalk9.yellow("\u26A0")} ${w}`);
+          }
+        }
+        if (options.strict && hasErrors) {
+          console.error(
+            chalk9.red(
+              `
+  \u2716 Pre-flight failed. Fix errors or use --force to skip.
+`
+            )
+          );
+          process.exitCode = 1;
+          return;
+        }
+        preflightPassed = overallStatus === "pass";
+      }
+      let closedAt = null;
+      const cycleName = remoteCycleData?.ok ? remoteCycleData.data.name : localCycle?.name ?? id;
+      const cycleGoal = remoteCycleData?.ok ? remoteCycleData.data.goal ?? "" : localCycle?.goal ?? "";
+      const appetite = remoteCycleData?.ok ? remoteCycleData.data.appetite ?? "medium" : localCycle?.appetite ?? "medium";
+      const startedAt = remoteCycleData?.ok ? remoteCycleData.data.created_at : localCycle?.created_at ?? (/* @__PURE__ */ new Date()).toISOString();
+      if (remoteCycleData?.ok && remoteAuth) {
+        const remoteClose = await updateRemoteCycleStatus(
+          remoteAuth,
+          id,
+          "closed"
+        );
+        if (remoteClose.ok) {
+          await cacheRemoteCycle(remoteClose.data);
+          closedAt = remoteClose.data.closed_at ?? (/* @__PURE__ */ new Date()).toISOString();
+          console.log(
+            chalk9.green(`
+\u2714 Cycle ${remoteClose.data.id} closed
+`)
+          );
+          if (remoteTasksData?.ok && remoteTasksData.data.length > 0) {
+            const done = remoteTasksData.data.filter(
+              (t) => t.status === "done"
+            ).length;
+            const total = remoteTasksData.data.length;
+            console.log(
+              `  ${chalk9.gray("Tasks:")} ${chalk9.green(String(done))} done / ${chalk9.white(String(total))} total`
+            );
+          }
+          console.log(
+            chalk9.gray(
+              `  Closed: ${new Date(closedAt).toLocaleDateString()}
+`
+            )
+          );
+        } else {
           if (remoteClose.reason === "project_missing") {
             showProjectMissingMessage();
             process.exitCode = 1;
             return;
           }
           warnFallbackToLocal(remoteClose.message);
-        } else if (cycleResult.reason === "project_missing") {
-          showProjectMissingMessage();
-          process.exitCode = 1;
-          return;
-        } else if (cycleResult.status === 404) {
-          console.error(chalk9.red(`
-\u2716 Cycle ${id} not found.
-`));
-          process.exitCode = 1;
-          return;
-        } else {
-          warnFallbackToLocal(cycleResult.message);
         }
       }
-      const cycle = await cycleService.getCycle(id);
-      if (!cycle) {
-        console.error(chalk9.red(`
-\u2716 Cycle ${id} not found.
-`));
-        process.exitCode = 1;
-        return;
-      }
-      if (cycle.status === "closed") {
-        console.log(chalk9.yellow(`
-  Cycle ${id} is already closed.
-`));
-        return;
-      }
-      const updated = await cycleService.updateCycle(id, {
-        status: "closed"
-      });
-      console.log(chalk9.green(`
+      if (!closedAt && localCycle) {
+        const updated = await cycleService.updateCycle(id, {
+          status: "closed"
+        });
+        closedAt = updated.closed_at ?? (/* @__PURE__ */ new Date()).toISOString();
+        console.log(chalk9.green(`
 \u2714 Cycle ${id} closed
 `));
-      const tasks = await taskService.getTasks();
-      const cycleTasks = tasks.filter(
-        (task) => task.cycle_id === id && !task.deleted_at
-      );
-      if (cycleTasks.length > 0) {
-        const done = cycleTasks.filter(
-          (task) => task.status === "done"
-        ).length;
-        const total = cycleTasks.length;
-        console.log(
-          `  ${chalk9.gray("Tasks:")} ${chalk9.green(String(done))} done / ${chalk9.white(String(total))} total`
-        );
-      }
-      if (updated.closed_at) {
+        if (localTasksForCycle.length > 0) {
+          const done = localTasksForCycle.filter(
+            (t) => t.status === "done"
+          ).length;
+          const total = localTasksForCycle.length;
+          console.log(
+            `  ${chalk9.gray("Tasks:")} ${chalk9.green(String(done))} done / ${chalk9.white(String(total))} total`
+          );
+        }
         console.log(
           chalk9.gray(
-            `  Closed: ${new Date(updated.closed_at).toLocaleDateString()}
+            `  Closed: ${new Date(closedAt).toLocaleDateString()}
 `
           )
         );
-      } else {
-        console.log();
+      }
+      if (closedAt && preflightTasks.length > 0) {
+        try {
+          const retro = retroService.build({
+            cycleId: id,
+            cycleName,
+            cycleGoal,
+            appetite,
+            startedAt: typeof startedAt === "string" ? startedAt : (/* @__PURE__ */ new Date()).toISOString(),
+            closedAt,
+            tasks: preflightTasks.map((t) => ({
+              id: t.id,
+              title: t.title,
+              status: t.status,
+              evidence: t.evidence ?? void 0,
+              cycle_id: id
+            })),
+            decisions: [],
+            totalValidationRuns: 0,
+            lastValidationStatus: preflightPassed ? "pass" : "warn",
+            openIssues: 0,
+            resolvedIssues: 0
+          });
+          const retroPath = await retroService.saveToChangelog(retro).catch(() => null);
+          const duration = retro.leadTimeDays ?? 0;
+          const target = retro.targetDays;
+          const variance = target != null ? duration - target : null;
+          const doneCnt = retro.completedTasks.length;
+          const deferCnt = retro.deferredTasks.length;
+          console.log(chalk9.bold("  \u{1F4CB} Retrospective Summary\n"));
+          console.log(
+            `  Duration: ${duration} days${target != null ? ` (target: ${target})` : ""}`
+          );
+          console.log(`  Velocity: ${doneCnt} done / ${deferCnt} deferred`);
+          if (variance !== null) {
+            const sign = variance >= 0 ? "+" : "";
+            const color = variance > 0 ? chalk9.yellow : chalk9.green;
+            console.log(`  vs appetite: ${color(`${sign}${variance} days`)}`);
+          }
+          if (retroPath) {
+            console.log(chalk9.gray(`  Saved: ${retroPath}`));
+          }
+          console.log();
+        } catch {
+        }
       }
     } catch (error) {
       console.error(
@@ -3373,6 +3514,452 @@ function registerCycleCommands(program2) {
     } catch (error) {
       console.error(
         chalk9.red(`Failed to show cycle focus: ${getErrorMessage(error)}`)
+      );
+    }
+  });
+  cycleCmd.command("validate <id>").description(
+    "Run full validation for a cycle: pre-flight checks + AI review (Phase 1 + 2)"
+  ).option("--skip-sensors", "Skip feedback sensor checks").option("--skip-ai", "Skip Phase 2 AI review (pre-flight only)").option(
+    "--backend <backend>",
+    "Execution backend for AI review: cloud|local (default: from cycle config)"
+  ).option("--strict", "Exit with error code if any check fails or warns").action(
+    async (id, options) => {
+      await trackCommandUsage("cycle validate");
+      try {
+        const rules = await rulesService.readRules();
+        const remoteAuth = await resolveRemoteAuth();
+        let cycleDbId;
+        let cycleTasks = [];
+        if (remoteAuth) {
+          const cycleResult = await getRemoteCycle(remoteAuth, id);
+          if (cycleResult.ok) {
+            cycleDbId = cycleResult.data.db_id;
+          }
+          const tasksResult = await getRemoteCycleTasks(remoteAuth, id);
+          if (tasksResult.ok) {
+            cycleTasks = tasksResult.data.map((t) => ({
+              id: t.id,
+              title: t.title,
+              status: t.status,
+              evidence: void 0
+            }));
+          }
+        }
+        if (cycleTasks.length === 0) {
+          const localTasks = await taskService.getTasks();
+          cycleTasks = localTasks.filter((t) => t.cycle_id === id && !t.deleted_at).map((t) => ({
+            id: t.id,
+            title: t.title,
+            status: t.status,
+            evidence: t.evidence
+          }));
+        }
+        let sensorResults = [];
+        if (!options.skipSensors && rules.run_sensors_on_validate) {
+          const config = await sensorsService.readConfig();
+          if (config.sensors.length > 0) {
+            console.log(chalk9.gray("  Running sensors..."));
+            sensorResults = await sensorsService.runSensors();
+          }
+        }
+        const gitDiff = validationService.getGitDiffSince();
+        const decisions = await loadDecisionsForDrift();
+        const preflight = await validationService.runPreflight(
+          cycleTasks,
+          sensorResults,
+          decisions,
+          gitDiff,
+          rules
+        );
+        console.log(chalk9.bold(`
+\u{1F50D}  Preflight Validation: ${id}
+`));
+        console.log(
+          `  ${chalk9.gray("Tasks:")} ${chalk9.white(String(preflight.doneTasks))}/${chalk9.white(String(preflight.totalTasks))} done`
+        );
+        if (preflight.blockedTasks > 0) {
+          console.log(
+            `  ${chalk9.yellow(`\u26A0  ${preflight.blockedTasks} task(s) blocked`)}`
+          );
+        }
+        if (sensorResults.length > 0) {
+          const passed = sensorResults.filter((r) => r.passed).length;
+          const statusColor = passed === sensorResults.length ? chalk9.green : chalk9.yellow;
+          console.log(
+            `  ${chalk9.gray("Sensors:")} ${statusColor(`${passed}/${sensorResults.length} passed`)}`
+          );
+          for (const s of sensorResults.filter((r) => !r.passed)) {
+            console.log(
+              `    ${chalk9.red("\u2717")} ${s.name}: exit ${s.exitCode}`
+            );
+            const lines = s.output.split("\n").filter((l) => l.trim()).slice(0, 4);
+            for (const line of lines) {
+              console.log(`      ${chalk9.gray(line)}`);
+            }
+          }
+        }
+        if (preflight.driftViolations.length > 0) {
+          console.log(
+            `  ${chalk9.yellow(`\u26A0  Architecture drift: ${preflight.driftViolations.length} violation(s)`)}`
+          );
+          for (const v of preflight.driftViolations.slice(0, 3)) {
+            console.log(
+              `    ${chalk9.red("\u2717")} ${chalk9.white(v.decisionId)}: ${v.file}:${v.line}`
+            );
+          }
+        }
+        if (preflight.errors.length > 0) {
+          console.log(chalk9.red("\n  Errors:"));
+          for (const err of preflight.errors) {
+            console.log(`    ${chalk9.red("\u2717")} ${err}`);
+          }
+        }
+        if (preflight.warnings.length > 0 && preflight.errors.length === 0) {
+          console.log(chalk9.yellow("\n  Warnings:"));
+          for (const w of preflight.warnings.slice(0, 5)) {
+            console.log(`    ${chalk9.yellow("\u26A0")} ${w}`);
+          }
+        }
+        const overallStatus = preflight.errors.length > 0 ? "fail" : preflight.warnings.length > 0 ? "warn" : "pass";
+        const statusDisplay = {
+          pass: chalk9.green("PASS"),
+          warn: chalk9.yellow("WARN"),
+          fail: chalk9.red("FAIL")
+        }[overallStatus];
+        console.log(chalk9.bold(`
+  Status: ${statusDisplay}
+`));
+        await validationService.saveReport({
+          cycleId: id,
+          ranAt: (/* @__PURE__ */ new Date()).toISOString(),
+          preflight,
+          overallStatus
+        });
+        if (options.strict && overallStatus !== "pass") {
+          process.exitCode = 1;
+          return;
+        }
+        if (!options.skipAi && remoteAuth) {
+          let sensorSummary = "";
+          if (sensorResults.length > 0) {
+            const failedSensors = sensorResults.filter((r) => !r.passed);
+            const passedSensors = sensorResults.filter((r) => r.passed);
+            const lines = [
+              `
+
+---
+## Pre-flight Sensor Results (${passedSensors.length}/${sensorResults.length} passed)`
+            ];
+            for (const s of sensorResults) {
+              const icon = s.passed ? "\u2713" : "\u2717";
+              lines.push(`${icon} ${s.name}: exit ${s.exitCode}`);
+              if (!s.passed) {
+                for (const line of s.output.split("\n").filter((l) => l.trim()).slice(0, 6)) {
+                  lines.push(`  ${line}`);
+                }
+              }
+            }
+            if (failedSensors.length > 0) {
+              lines.push(
+                `
+Note: ${failedSensors.length} sensor(s) failed. Please review the output above.`
+              );
+            }
+            sensorSummary = lines.join("\n");
+          }
+          console.log(chalk9.gray("\n  Triggering AI review run..."));
+          try {
+            const backend = options.backend === "cloud" || options.backend === "local" ? options.backend : void 0;
+            const cycleUuidForApi = cycleDbId ?? id;
+            const runResult = await requestRemoteJson(
+              remoteAuth,
+              `/projects/${remoteAuth.projectId}/cycles/${cycleUuidForApi}/runs`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  ...sensorSummary ? { validation_instructions: sensorSummary } : {},
+                  ...backend ? { execution_backend: backend } : {}
+                })
+              }
+            );
+            if (runResult.ok) {
+              const runId = runResult.data.run?.id;
+              console.log(
+                chalk9.green(
+                  `  \u2714 AI review run started${runId ? `: ${runId}` : ""}`
+                )
+              );
+              console.log(
+                chalk9.gray(
+                  `  View results in the web dashboard or run: vem cycle health ${id}
+`
+                )
+              );
+              if (runId) {
+                try {
+                  await requestRemoteJson(
+                    remoteAuth,
+                    `/projects/${remoteAuth.projectId}/cycles/${cycleUuidForApi}/runs/${runId}/preflight`,
+                    {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        ranAt: (/* @__PURE__ */ new Date()).toISOString(),
+                        taskStats: {
+                          total: preflight.totalTasks,
+                          done: preflight.doneTasks,
+                          blocked: preflight.blockedTasks
+                        },
+                        sensorResults: sensorResults.map((s) => ({
+                          name: s.name,
+                          passed: s.passed,
+                          exitCode: s.exitCode,
+                          output: s.output.split("\n").filter((l) => l.trim()).slice(0, 10).join("\n")
+                        })),
+                        driftViolations: preflight.driftViolations.map(
+                          (v) => ({
+                            decision: v.decisionId,
+                            pattern: v.pattern ?? "",
+                            file: v.file,
+                            line: String(v.line),
+                            match: v.match
+                          })
+                        )
+                      })
+                    }
+                  );
+                } catch {
+                }
+              }
+            } else {
+              console.log(
+                chalk9.yellow(
+                  `  \u26A0 Could not start AI review: ${runResult.message}
+`
+                )
+              );
+            }
+          } catch (runErr) {
+            console.log(
+              chalk9.yellow(
+                `  \u26A0 AI review skipped: ${getErrorMessage(runErr)}
+`
+              )
+            );
+          }
+        } else if (options.skipAi) {
+          console.log(chalk9.gray("  AI review skipped (--skip-ai).\n"));
+          if (remoteAuth && cycleDbId) {
+            try {
+              await requestRemoteJson(
+                remoteAuth,
+                `/projects/${remoteAuth.projectId}/cycles/${cycleDbId}/preflight`,
+                {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    ranAt: (/* @__PURE__ */ new Date()).toISOString(),
+                    taskStats: {
+                      total: preflight.totalTasks,
+                      done: preflight.doneTasks,
+                      blocked: preflight.blockedTasks
+                    },
+                    sensorResults: sensorResults.map((s) => ({
+                      name: s.name,
+                      passed: s.passed,
+                      exitCode: s.exitCode,
+                      output: s.output.split("\n").filter((l) => l.trim()).slice(0, 10).join("\n")
+                    })),
+                    driftViolations: preflight.driftViolations.map((v) => ({
+                      decision: v.decisionId,
+                      pattern: v.pattern ?? "",
+                      file: v.file,
+                      line: String(v.line),
+                      match: v.match
+                    }))
+                  })
+                }
+              );
+            } catch {
+            }
+          }
+        } else {
+          console.log(
+            chalk9.gray("  Not linked to a project \u2014 AI review skipped.\n")
+          );
+        }
+      } catch (error) {
+        console.error(
+          chalk9.red(`Failed to validate cycle: ${getErrorMessage(error)}`)
+        );
+        process.exitCode = 1;
+      }
+    }
+  );
+  cycleCmd.command("health [id]").description("Show health snapshot for the active or given cycle").action(async (id) => {
+    await trackCommandUsage("cycle health");
+    try {
+      let cycle = null;
+      const remoteAuth = await resolveRemoteAuth();
+      if (id) {
+        if (remoteAuth) {
+          const result = await getRemoteCycle(remoteAuth, id);
+          if (result.ok) cycle = result.data;
+          else if (result.reason === "project_missing") {
+            showProjectMissingMessage();
+            process.exitCode = 1;
+            return;
+          }
+        }
+        if (!cycle) cycle = await cycleService.getCycle(id);
+      } else {
+        if (remoteAuth) {
+          const result = await getRemoteCycles(remoteAuth);
+          if (result.ok)
+            cycle = result.data.find((c) => c.status === "active") ?? null;
+        }
+        if (!cycle) cycle = await cycleService.getActiveCycle();
+      }
+      if (!cycle) {
+        console.log(chalk9.yellow("\n  No active cycle found.\n"));
+        return;
+      }
+      let tasks = [];
+      if (remoteAuth) {
+        const tasksResult = await getRemoteCycleTasks(remoteAuth, cycle.id);
+        if (tasksResult.ok) tasks = tasksResult.data;
+      }
+      if (tasks.length === 0) {
+        const localTasks = await taskService.getTasks();
+        tasks = localTasks.filter((t) => t.cycle_id === cycle.id && !t.deleted_at).map((t) => ({ id: t.id, title: t.title, status: t.status }));
+      }
+      const byStatus = tasks.reduce((acc, t) => {
+        acc[t.status] = (acc[t.status] ?? 0) + 1;
+        return acc;
+      }, {});
+      console.log(chalk9.bold(`
+\u{1F3E5}  Cycle Health: ${cycle.id}
+`));
+      console.log(`  ${chalk9.white(cycle.name)}`);
+      console.log(`  ${chalk9.gray("Goal:")} ${cycle.goal}`);
+      if (cycle.appetite) {
+        const appetiteDays = {
+          small: 7,
+          medium: 14,
+          large: 42
+        };
+        const target = appetiteDays[cycle.appetite];
+        if (target && cycle.start_at) {
+          const elapsed = Math.round(
+            (Date.now() - new Date(cycle.start_at).getTime()) / (1e3 * 60 * 60 * 24)
+          );
+          const pct = Math.min(100, Math.round(elapsed / target * 100));
+          const bar = "\u2588".repeat(Math.floor(pct / 5)) + "\u2591".repeat(20 - Math.floor(pct / 5));
+          console.log(
+            `  ${chalk9.gray("Progress:")} ${bar} ${chalk9.white(`${pct}%`)} (day ${elapsed}/${target})`
+          );
+        }
+      }
+      console.log(`
+  ${chalk9.bold("Tasks:")}`);
+      for (const [status, count] of Object.entries(byStatus)) {
+        const icon = status === "done" ? chalk9.green("\u2713") : status === "blocked" ? chalk9.red("\u25B2") : status === "in-progress" ? chalk9.cyan("\u2B21") : chalk9.gray("\u25CB");
+        console.log(`    ${icon}  ${count}  ${status}`);
+      }
+      const report = await validationService.loadReport(cycle.id);
+      if (report) {
+        const statusDisplay = report.overallStatus === "pass" ? chalk9.green("PASS") : report.overallStatus === "warn" ? chalk9.yellow("WARN") : chalk9.red("FAIL");
+        console.log(
+          `
+  ${chalk9.bold("Last Validation:")} ${statusDisplay} \u2014 ${new Date(report.ranAt).toLocaleString()}`
+        );
+        const pf = report.preflight;
+        if (pf.errors.length > 0) {
+          console.log(chalk9.red(`    \u2717 ${pf.errors[0]}`));
+        }
+        if (pf.warnings.length > 0) {
+          console.log(
+            chalk9.yellow(`    \u26A0 ${pf.warnings.slice(0, 2).join(" | ")}`)
+          );
+        }
+      }
+      console.log();
+    } catch (error) {
+      console.error(
+        chalk9.red(`Failed to get cycle health: ${getErrorMessage(error)}`)
+      );
+    }
+  });
+  cycleCmd.command("retrospective <id>").description("Generate a retrospective for a closed cycle").action(async (id) => {
+    await trackCommandUsage("cycle retrospective");
+    try {
+      const remoteAuth = await resolveRemoteAuth();
+      let cycle = null;
+      if (remoteAuth) {
+        const result = await getRemoteCycle(remoteAuth, id);
+        if (result.ok) cycle = result.data;
+        else if (result.reason === "project_missing") {
+          showProjectMissingMessage();
+          process.exitCode = 1;
+          return;
+        }
+      }
+      if (!cycle) cycle = await cycleService.getCycle(id);
+      if (!cycle) {
+        console.error(chalk9.red(`
+\u2716 Cycle ${id} not found.
+`));
+        process.exitCode = 1;
+        return;
+      }
+      const localTasks = await taskService.getTasks();
+      const decisions = [];
+      const retro = retroService.build({
+        cycleId: cycle.id,
+        cycleName: cycle.name,
+        cycleGoal: cycle.goal,
+        appetite: cycle.appetite,
+        startedAt: cycle.start_at,
+        closedAt: cycle.closed_at,
+        tasks: localTasks.map((t) => ({
+          id: t.id,
+          title: t.title,
+          status: t.status,
+          evidence: t.evidence,
+          cycle_id: t.cycle_id,
+          deleted_at: t.deleted_at
+        })),
+        decisions,
+        totalValidationRuns: 0,
+        lastValidationStatus: void 0,
+        openIssues: 0,
+        resolvedIssues: 0
+      });
+      const filePath = await retroService.saveToChangelog(retro);
+      console.log(chalk9.bold(`
+\u{1F4CB}  Retrospective: ${cycle.name}
+`));
+      console.log(
+        `  ${chalk9.gray("Completed:")} ${chalk9.green(String(retro.completedTasks.length))} tasks`
+      );
+      console.log(
+        `  ${chalk9.gray("Deferred:")} ${chalk9.yellow(String(retro.deferredTasks.length))} tasks`
+      );
+      if (retro.leadTimeDays !== void 0) {
+        const vs = retro.targetDays ? ` (target ${retro.targetDays} days)` : "";
+        console.log(
+          `  ${chalk9.gray("Duration:")} ${retro.leadTimeDays} days${vs}`
+        );
+      }
+      console.log(chalk9.gray(`
+  Saved to: ${filePath}
+`));
+    } catch (error) {
+      console.error(
+        chalk9.red(
+          `Failed to generate retrospective: ${getErrorMessage(error)}`
+        )
       );
     }
   });
@@ -3757,6 +4344,83 @@ function registerInstructionCommands(program2) {
       process.exitCode = 1;
     }
   });
+  const constitutionService = new ConstitutionService();
+  const constitutionCmd = program2.command("constitution").description(
+    "Manage the Agent Constitution \u2014 immutable principles for all AI agents"
+  );
+  constitutionCmd.command("show").description("Print the current Agent Constitution").action(async () => {
+    await trackCommandUsage("constitution.show");
+    const content = await constitutionService.get();
+    if (!content) {
+      console.log(
+        chalk10.yellow(
+          "No constitution found. Run `vem constitution init` to create one."
+        )
+      );
+      return;
+    }
+    console.log(content);
+  });
+  constitutionCmd.command("init").description("Create a default Agent Constitution in .vem/CONSTITUTION.md").action(async () => {
+    await trackCommandUsage("constitution.init");
+    const created = await constitutionService.initDefault();
+    if (created) {
+      console.log(
+        chalk10.green(
+          "\u2714 Created .vem/CONSTITUTION.md with default principles."
+        )
+      );
+      console.log(
+        chalk10.gray("  Edit it with `vem constitution edit` to customize.")
+      );
+    } else {
+      console.log(
+        chalk10.yellow(
+          "Constitution already exists. Use `vem constitution edit` to modify it."
+        )
+      );
+    }
+  });
+  constitutionCmd.command("edit").description("Edit the Agent Constitution in your $EDITOR").action(async () => {
+    await trackCommandUsage("constitution.edit");
+    const { execSync: execSync6 } = await import("child_process");
+    const { getVemDir: getVemDir2 } = await import("./dist-QMJVQG6J.js");
+    const vemDir = await getVemDir2();
+    const constitutionPath = path.join(vemDir, "CONSTITUTION.md");
+    const exists = await constitutionService.exists();
+    if (!exists) {
+      await constitutionService.initDefault();
+      console.log(
+        chalk10.gray("Created default constitution \u2014 opening in editor...")
+      );
+    }
+    const editor = process.env.EDITOR ?? process.env.VISUAL ?? "nano";
+    try {
+      execSync6(`${editor} "${constitutionPath}"`, { stdio: "inherit" });
+      console.log(chalk10.green("\u2714 Constitution updated."));
+    } catch {
+      console.log(
+        chalk10.yellow(
+          `Could not open editor. Edit manually: ${constitutionPath}`
+        )
+      );
+    }
+  });
+  constitutionCmd.command("set").description("Set the Agent Constitution from stdin").option("--file <path>", "Read constitution from a file instead of stdin").action(async (options) => {
+    await trackCommandUsage("constitution.set");
+    let content;
+    if (options.file) {
+      content = await fs2.readFile(options.file, "utf-8");
+    } else {
+      const chunks = [];
+      for await (const chunk of process.stdin) {
+        chunks.push(chunk);
+      }
+      content = Buffer.concat(chunks).toString("utf-8");
+    }
+    await constitutionService.set(content.trim());
+    console.log(chalk10.green("\u2714 Constitution updated."));
+  });
 }
 
 // src/commands/maintenance.ts
@@ -3982,7 +4646,7 @@ function registerMaintenanceCommands(program2) {
   });
   program2.command("diff").description("Show differences between local and cloud state").option("--detailed", "Show detailed content diffs").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DiffService } = await import("./dist-DNLTXAM7.js");
+      const { DiffService } = await import("./dist-QMJVQG6J.js");
       const diffService = new DiffService();
       const result = await diffService.compareWithLastPush();
       if (options.json) {
@@ -4040,7 +4704,7 @@ ${"\u2500".repeat(50)}`));
   });
   program2.command("doctor").description("Run health checks on VEM setup").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DoctorService } = await import("./dist-DNLTXAM7.js");
+      const { DoctorService } = await import("./dist-QMJVQG6J.js");
       const doctorService = new DoctorService();
       const results = await doctorService.runAllChecks();
       if (options.json) {
@@ -4162,6 +4826,129 @@ ${"\u2500".repeat(50)}`));
 \u2716 Failed to generate summary: ${error.message}
 `)
       );
+    }
+  });
+  const validationCmd = program2.command("validation").description("Manage validation rules (.vem/validation-rules.json)");
+  validationCmd.command("show").description("Display current validation rules").action(async () => {
+    try {
+      const rulesService2 = new ValidationRulesService();
+      const rules = await rulesService2.readRules();
+      console.log(chalk11.bold("\n\u{1F512} Validation Rules\n"));
+      const rows = [
+        ["require_evidence_on_done", rules.require_evidence_on_done],
+        [
+          "require_all_tasks_done_to_close",
+          rules.require_all_tasks_done_to_close
+        ],
+        ["run_sensors_on_validate", rules.run_sensors_on_validate],
+        ["trigger_ai_review_on_close", rules.trigger_ai_review_on_close],
+        ["require_no_blocked_tasks", rules.require_no_blocked_tasks],
+        ["strict_mode", rules.strict_mode],
+        ["preferred_backend", rules.preferred_backend]
+      ];
+      for (const [key, val] of rows) {
+        const icon = val === true ? chalk11.green("\u2713") : val === false ? chalk11.gray("\u2717") : chalk11.cyan(String(val));
+        console.log(`  ${chalk11.bold(key.padEnd(40))} ${icon}`);
+      }
+      console.log();
+    } catch (error) {
+      console.error(chalk11.red(`
+\u2716 ${error.message}
+`));
+    }
+  });
+  validationCmd.command("edit").description("Edit validation rules in $EDITOR").action(async () => {
+    try {
+      const vemDir = await getVemDir();
+      const rulesPath = path2.join(vemDir, "validation-rules.json");
+      if (!await fs3.pathExists(rulesPath)) {
+        const rulesService2 = new ValidationRulesService();
+        await rulesService2.readRules();
+      }
+      const editor = process.env.EDITOR || process.env.VISUAL || "vi";
+      execSync3(`${editor} "${rulesPath}"`, { stdio: "inherit" });
+      console.log(chalk11.green("\n\u2714 Validation rules updated.\n"));
+    } catch (error) {
+      console.error(chalk11.red(`
+\u2716 ${error.message}
+`));
+    }
+  });
+  const driftCmd = program2.command("drift").description(
+    "Architecture drift detection based on ADRs and recent git changes"
+  );
+  driftCmd.command("check").description(
+    "Check for architecture drift: ADR enforcement patterns vs recent git diff"
+  ).option(
+    "--since <ref>",
+    "Git ref or ISO date to diff from (default: HEAD~30)"
+  ).action(async (options) => {
+    await trackCommandUsage("drift.check");
+    try {
+      const cycleValidationService = new CycleValidationService();
+      const decisionsLog2 = new ScalableLogService(DECISIONS_DIR);
+      const rawDecisions = await decisionsLog2.getAllEntries();
+      const decisions = rawDecisions.map((d) => {
+        const match = d.content.match(
+          /\*\*Enforcement Pattern:\*\*\s*(.+)/i
+        );
+        return {
+          id: d.id,
+          title: d.title,
+          enforcement_pattern: match ? match[1].trim() : void 0
+        };
+      }).filter((d) => d.enforcement_pattern);
+      if (decisions.length === 0) {
+        console.log(
+          chalk11.yellow(
+            "\n\u26A0  No decisions have an Enforcement Pattern set.\n"
+          )
+        );
+        console.log(
+          chalk11.gray(
+            "  Add '**Enforcement Pattern:** <regex>' to a decision file in .vem/decisions/"
+          )
+        );
+        console.log(
+          chalk11.gray(
+            "  Or use: vem decision add ... --enforcement-pattern <regex>\n"
+          )
+        );
+        return;
+      }
+      const gitDiff = cycleValidationService.getGitDiffSince(options.since);
+      const violations = cycleValidationService.checkDrift(
+        decisions,
+        gitDiff
+      );
+      console.log(chalk11.bold("\n\u{1F50D}  Architecture Drift Check\n"));
+      console.log(
+        chalk11.gray(
+          `  Checking ${decisions.length} decision(s) with enforcement patterns...
+`
+        )
+      );
+      if (violations.length === 0) {
+        console.log(chalk11.green("  \u2714 No drift violations detected.\n"));
+      } else {
+        console.log(
+          chalk11.red(`  \u2716 ${violations.length} violation(s) found:
+`)
+        );
+        for (const v of violations) {
+          console.log(`  ${chalk11.bold(v.decisionTitle)}`);
+          console.log(`    File:    ${chalk11.cyan(v.file)}:${v.line}`);
+          console.log(`    Pattern: ${chalk11.gray(v.pattern)}`);
+          console.log(`    Match:   ${chalk11.yellow(v.match)}
+`);
+        }
+        process.exitCode = 1;
+      }
+    } catch (error) {
+      console.error(chalk11.red(`
+\u2716 Drift check failed: ${error.message}
+`));
+      process.exitCode = 1;
     }
   });
 }
@@ -4884,6 +5671,10 @@ async function runInteractiveLinkFlow(apiKey, configService) {
   if (!projectId) return null;
   await configService.setProjectId(projectId);
   await configService.setProjectOrgId(projectOrgId || null);
+  const linkedProject = projects.find((p) => p.id === projectId);
+  if (linkedProject?.name) {
+    await configService.setProjectName(linkedProject.name);
+  }
   const repoSelection = capturedRepoSelection !== void 0 ? capturedRepoSelection : await getGitRemoteSelection({
     forcePrompt: false,
     promptOnMultiple: true
@@ -4973,6 +5764,9 @@ function registerProjectCommands(program2) {
           return;
         }
         projectOrgId = check.orgId || projectOrgId;
+        if (check.name) {
+          await configService.setProjectName(check.name);
+        }
       }
       if (projectId) {
         await configService.setProjectId(projectId);
@@ -5139,6 +5933,15 @@ import { existsSync, mkdirSync, realpathSync } from "fs";
 import { arch, homedir } from "os";
 import { dirname as dirname2, resolve as resolve2 } from "path";
 import chalk14 from "chalk";
+function isVerbose() {
+  return !!process.env.VEM_RUNNER_VERBOSE;
+}
+function formatError(err) {
+  if (!(err instanceof Error)) return String(err);
+  const parts = [err.message];
+  if (err.cause != null) parts.push(`caused by: ${formatError(err.cause)}`);
+  return parts.join(" \u2014 ");
+}
 function sleep(ms) {
   return new Promise((resolve4) => setTimeout(resolve4, ms));
 }
@@ -5411,6 +6214,25 @@ function parseVemPlanBlock(output) {
     return null;
   }
 }
+function detectDefaultBranch(remoteName) {
+  try {
+    const ref = runGit([
+      "symbolic-ref",
+      `refs/remotes/${remoteName}/HEAD`
+    ]).trim();
+    const parts = ref.split("/");
+    if (parts.length > 0) return parts[parts.length - 1];
+  } catch {
+  }
+  for (const candidate of ["main", "master"]) {
+    try {
+      runGit(["rev-parse", "--verify", `refs/heads/${candidate}`]);
+      return candidate;
+    } catch {
+    }
+  }
+  return "main";
+}
 async function resolveGitRemote(configService) {
   const linkedRemote = (await configService.getLinkedRemoteName())?.trim();
   const preferredRemote = linkedRemote || "origin";
@@ -5492,11 +6314,19 @@ async function apiRequest(configService, apiKey, path5, init) {
     ..._runnerIdentityHeaders,
     ...init?.headers ?? {}
   };
-  return fetch(`${API_URL}${path5}`, {
-    ...init,
-    headers,
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
-  });
+  const url = `${API_URL}${path5}`;
+  try {
+    return await fetch(url, {
+      ...init,
+      headers,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+    });
+  } catch (err) {
+    if (isVerbose()) {
+      throw new Error(`fetch ${url}: ${formatError(err)}`, { cause: err });
+    }
+    throw err;
+  }
 }
 async function appendRunLogs(configService, apiKey, runId, entries) {
   if (entries.length === 0) return;
@@ -5558,6 +6388,117 @@ async function completeTaskRunWithRetry(configService, apiKey, runId, payload, a
   }
   throw new Error(`Failed to complete run ${runId}: ${lastError}`);
 }
+async function runCyclePreflightIfNeeded(input) {
+  const { configService, apiKey, cycleRunId } = input;
+  try {
+    const statusRes = await apiRequest(
+      configService,
+      apiKey,
+      `/cycle-runs/${cycleRunId}/preflight-status`
+    );
+    if (!statusRes.ok) return;
+    const status = await statusRes.json();
+    if (status.has_preflight) return;
+    const rules = status.validation_rules ?? {};
+    const runSensors = rules.run_sensors_on_validate !== false;
+    console.log(chalk14.gray("  [preflight] Running sensor checks..."));
+    const sensorsService3 = new SensorsService();
+    let sensorResults = [];
+    if (runSensors) {
+      try {
+        const config = await sensorsService3.readConfig();
+        if (config.sensors.length > 0) {
+          sensorResults = await sensorsService3.runSensors();
+          const passed = sensorResults.filter((r) => r.passed).length;
+          console.log(
+            chalk14.gray(
+              `  [preflight] Sensors: ${passed}/${sensorResults.length} passed`
+            )
+          );
+        } else {
+          console.log(
+            chalk14.gray("  [preflight] No sensors configured \u2014 skipping")
+          );
+        }
+      } catch {
+        console.log(chalk14.yellow("  [preflight] Sensor run failed \u2014 skipping"));
+      }
+    }
+    const decisionsLog2 = new ScalableLogService(DECISIONS_DIR);
+    const decisionsService = new CycleValidationService();
+    let decisions = [];
+    try {
+      const entries = await decisionsLog2.getAllEntries();
+      decisions = entries.map((entry) => {
+        const match = entry.content.match(/^enforcement_pattern:\s*(.+)$/m);
+        return {
+          id: entry.id,
+          title: entry.title,
+          enforcement_pattern: match ? match[1].trim() : void 0
+        };
+      }).filter((d) => d.enforcement_pattern !== void 0);
+    } catch {
+    }
+    const gitDiff = decisionsService.getGitDiffSince();
+    const preflight = await decisionsService.runPreflight(
+      [],
+      // tasks are reviewed by the AI agent; preflight only needs drift + sensors
+      sensorResults,
+      decisions,
+      gitDiff,
+      {
+        require_evidence_on_done: false,
+        require_all_tasks_done_to_close: false,
+        require_no_blocked_tasks: false,
+        run_sensors_on_validate: runSensors,
+        strict_mode: !!rules.strict_mode,
+        trigger_ai_review_on_close: false,
+        preferred_backend: rules.preferred_backend ?? "local"
+      }
+    );
+    if (preflight.driftViolations.length > 0) {
+      console.log(
+        chalk14.yellow(
+          `  [preflight] Architecture drift: ${preflight.driftViolations.length} violation(s)`
+        )
+      );
+    }
+    await apiRequest(
+      configService,
+      apiKey,
+      `/cycle-runs/${cycleRunId}/preflight`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          ranAt: (/* @__PURE__ */ new Date()).toISOString(),
+          taskStats: {
+            total: preflight.totalTasks,
+            done: preflight.doneTasks,
+            blocked: preflight.blockedTasks
+          },
+          sensorResults: sensorResults.map((s) => ({
+            name: s.name,
+            passed: s.passed,
+            exitCode: s.exitCode,
+            output: s.output.split("\n").filter((l) => l.trim()).slice(0, 10).join("\n")
+          })),
+          driftViolations: preflight.driftViolations.map((v) => ({
+            decision: v.decisionId,
+            pattern: v.pattern ?? "",
+            file: v.file,
+            line: String(v.line),
+            match: v.match
+          }))
+        })
+      }
+    );
+    console.log(chalk14.gray("  [preflight] Sensor + drift results posted"));
+  } catch (err) {
+    if (isVerbose()) {
+      console.warn(chalk14.yellow(`  [preflight] Warning: ${formatError(err)}`));
+    }
+  }
+}
 async function executeClaimedRun(input) {
   const {
     configService,
@@ -5583,8 +6524,8 @@ async function executeClaimedRun(input) {
   let createPr = false;
   let stdoutBuffer = "";
   let createdPlanId = null;
-  const baseBranch = run.agent_base_branch || "main";
   const remote = await resolveGitRemote(configService);
+  const baseBranch = run.agent_base_branch || detectDefaultBranch(remote.name);
   try {
     if (hasDirtyWorktree()) {
       throw new Error(
@@ -5630,7 +6571,12 @@ async function executeClaimedRun(input) {
         env: {
           ...process.env,
           VEM_RUNNER_INSTRUCTIONS: run.user_prompt?.trim() || "",
-          VEM_RUN_MODE: run.run_mode || "implement"
+          VEM_RUN_MODE: run.run_mode || "implement",
+          // Inject review-submit credentials so `vem review submit` works
+          // from inside the agent subprocess for local unsafe runner runs.
+          VEM_TASK_RUN_ID: run.id,
+          VEM_API_KEY: apiKey,
+          VEM_API_URL: API_URL
         },
         cwd: repoRoot,
         // detached: true puts the child in its own process group so we can
@@ -5682,10 +6628,11 @@ async function executeClaimedRun(input) {
       } catch {
       }
     }, 3e4);
+    const isBufferedMode = isPlanCreationMode || run.run_mode === "review";
     child.stdout.on("data", async (chunk) => {
       const text = chunk.toString();
       process.stdout.write(text);
-      if (isPlanCreationMode) stdoutBuffer += text;
+      if (isBufferedMode) stdoutBuffer += text;
       void appendRunLogs(configService, apiKey, run.id, [
         { sequence: sequence++, stream: "stdout", chunk: text }
       ]);
@@ -5693,7 +6640,7 @@ async function executeClaimedRun(input) {
     child.stderr.on("data", async (chunk) => {
       const text = chunk.toString();
       process.stderr.write(text);
-      if (isPlanCreationMode) stdoutBuffer += text;
+      if (isBufferedMode) stdoutBuffer += text;
       void appendRunLogs(configService, apiKey, run.id, [
         { sequence: sequence++, stream: "stderr", chunk: text }
       ]);
@@ -5838,6 +6785,9 @@ async function executeClaimedRun(input) {
 Instructions:
 ${run.user_prompt.trim()}` : "Triggered from VEM web.",
       ...createdPlanId ? { plan_id: createdPlanId } : {},
+      // Supply buffered log lines for review runs so applyVemReviewFromLogs
+      // doesn't have to race against async DB writes from appendRunLogs.
+      ...run.run_mode === "review" && stdoutBuffer ? { full_log_lines: stdoutBuffer.split("\n") } : {},
       summary: completionStatus === "completed" ? createdPlanId ? `Runner completed the queued task run. Plan created: ${createdPlanId}.` : "Runner completed the queued task run." : `Runner finished with status ${completionStatus}.`
     });
     await sendRunnerHeartbeat(
@@ -5876,8 +6826,8 @@ async function executeClaimedRunInSandbox(input) {
     appendRunLogs(configService, apiKey, run.id, toFlush).catch(() => {
     });
   };
-  const baseBranch = run.agent_base_branch || "main";
   const remote = await resolveGitRemote(configService);
+  const baseBranch = run.agent_base_branch || detectDefaultBranch(remote.name);
   worktreePath = `/tmp/vem-run-${run.id}-${Date.now().toString(36)}`;
   branchName = run.reuse_existing_branch ? run.agent_base_branch : `vem/${sanitizeBranchSegment(run.task_external_id)}-${Date.now().toString(36)}`;
   try {
@@ -6446,11 +7396,26 @@ function registerRunnerCommands(program2) {
     "--unsafe",
     "Disable Docker sandbox (run agent directly on host \u2014 no isolation)"
   ).action(async (options, command) => {
+    try {
+      process.loadEnvFile();
+    } catch {
+    }
     const configService = new ConfigService();
     const apiKey = await ensureAuthenticated(configService);
     const projectId = await configService.getProjectId();
     if (!projectId) {
       throw new Error("This repository is not linked to a VEM project.");
+    }
+    let projectName = await configService.getProjectName();
+    if (!projectName) {
+      try {
+        const check = await validateProject(projectId, apiKey, configService);
+        if (check.name) {
+          projectName = check.name;
+          await configService.setProjectName(check.name);
+        }
+      } catch {
+      }
     }
     const useSandbox = !options.unsafe;
     if (useSandbox) {
@@ -6473,11 +7438,16 @@ function registerRunnerCommands(program2) {
       "X-Vem-Runner-Id": runnerInstanceId,
       "X-Vem-Runner-Name": runnerInstanceName
     };
+    console.log(chalk14.cyan.bold("\n\u26A1 vem runner starting\n"));
     console.log(
-      chalk14.cyan(
-        `Starting paired runner for project ${projectId} using agent "${agent}" [${modeLabel}] (${runnerInstanceName})...`
-      )
+      `  ${chalk14.gray("Project:")}  ${projectName ? `${chalk14.white.bold(projectName)} ${chalk14.gray(`(${projectId})`)}` : chalk14.white(projectId)}`
     );
+    console.log(`  ${chalk14.gray("Agent:")}    ${chalk14.white(agent)}`);
+    console.log(`  ${chalk14.gray("Mode:")}     ${chalk14.white(modeLabel)}`);
+    console.log(
+      `  ${chalk14.gray("Runner:")}   ${chalk14.white(runnerInstanceName)}`
+    );
+    console.log();
     if (!useSandbox) {
       console.log(
         chalk14.yellow(
@@ -6485,10 +7455,41 @@ function registerRunnerCommands(program2) {
         )
       );
     }
+    if (isVerbose()) {
+      console.log(
+        chalk14.gray("  \u{1F50D} Verbose logging enabled (VEM_RUNNER_VERBOSE=1).")
+      );
+    }
     let shouldStop = false;
+    let activeJobRunning = false;
     let consecutiveErrors = 0;
+    let sigintCount = 0;
+    let sigintResetTimer = null;
     process.on("SIGINT", () => {
-      shouldStop = true;
+      if (!activeJobRunning) {
+        shouldStop = true;
+        process.stderr.write(
+          chalk14.gray("\n  Runner stopped. (no active job)\n")
+        );
+        return;
+      }
+      sigintCount++;
+      if (sigintResetTimer) clearTimeout(sigintResetTimer);
+      if (sigintCount === 1) {
+        process.stderr.write(
+          chalk14.yellow(
+            "\n  \u26A0  A job is currently running. Press Ctrl+C again within 5s to force stop, or wait for it to complete.\n"
+          )
+        );
+        sigintResetTimer = setTimeout(() => {
+          sigintCount = 0;
+        }, 5e3);
+      } else {
+        if (sigintResetTimer) clearTimeout(sigintResetTimer);
+        shouldStop = true;
+        process.stderr.write(chalk14.red("\n  \u2716 Force stopping runner...\n"));
+        process.exit(1);
+      }
     });
     process.on("SIGTERM", () => {
       shouldStop = true;
@@ -6538,26 +7539,39 @@ function registerRunnerCommands(program2) {
         if (payload.run) {
           consecutiveErrors = 0;
           const runAgent = typeof payload.run.agent_name === "string" && payload.run.agent_name.trim().length > 0 ? payload.run.agent_name.trim() : agent;
-          if (useSandbox) {
-            const credentials = collectSandboxCredentials(runAgent);
-            await executeClaimedRunInSandbox({
-              configService,
-              apiKey,
-              projectId,
-              agent: runAgent,
-              run: payload.run,
-              credentials
-            });
-          } else {
-            await executeClaimedRun({
-              configService,
-              apiKey,
-              projectId,
-              agent: runAgent,
-              useSandbox,
-              agentPinned,
-              run: payload.run
-            });
+          activeJobRunning = true;
+          try {
+            if (payload.run.cycle_run_id && payload.run.run_mode === "review") {
+              await runCyclePreflightIfNeeded({
+                configService,
+                apiKey,
+                cycleRunId: payload.run.cycle_run_id
+              });
+            }
+            if (useSandbox) {
+              const credentials = collectSandboxCredentials(runAgent);
+              await executeClaimedRunInSandbox({
+                configService,
+                apiKey,
+                projectId,
+                agent: runAgent,
+                run: payload.run,
+                credentials
+              });
+            } else {
+              await executeClaimedRun({
+                configService,
+                apiKey,
+                projectId,
+                agent: runAgent,
+                useSandbox,
+                agentPinned,
+                run: payload.run
+              });
+            }
+          } finally {
+            activeJobRunning = false;
+            sigintCount = 0;
           }
           if (options.once) break;
           continue;
@@ -6577,15 +7591,21 @@ function registerRunnerCommands(program2) {
         const terminalPayload = await terminalClaimResponse.json();
         if (terminalPayload.session) {
           consecutiveErrors = 0;
-          await executeClaimedTerminalSession({
-            configService,
-            apiKey,
-            projectId,
-            agent,
-            useSandbox,
-            agentPinned,
-            session: terminalPayload.session
-          });
+          activeJobRunning = true;
+          try {
+            await executeClaimedTerminalSession({
+              configService,
+              apiKey,
+              projectId,
+              agent,
+              useSandbox,
+              agentPinned,
+              session: terminalPayload.session
+            });
+          } finally {
+            activeJobRunning = false;
+            sigintCount = 0;
+          }
           if (options.once) break;
           continue;
         }
@@ -6595,7 +7615,7 @@ function registerRunnerCommands(program2) {
       } catch (pollError) {
         consecutiveErrors++;
         const backoffMs = Math.min(5e3 * consecutiveErrors, 6e4);
-        const msg = pollError instanceof Error ? pollError.message : String(pollError);
+        const msg = isVerbose() ? formatError(pollError) : pollError instanceof Error ? pollError.message : String(pollError);
         process.stderr.write(
           `[runner] poll error (attempt ${consecutiveErrors}): ${msg}. Retrying in ${backoffMs / 1e3}s...
 `
@@ -6611,6 +7631,7 @@ function registerRunnerCommands(program2) {
       null,
       getRunnerCapabilities(agent, useSandbox, agentPinned)
     );
+    console.log(chalk14.gray("\n  Runner offline.\n"));
   });
 }
 
@@ -6790,9 +7811,127 @@ Found ${data.results.length} results:
   });
 }
 
-// src/commands/sessions.ts
+// src/commands/sensors.ts
 import chalk16 from "chalk";
 import Table3 from "cli-table3";
+var sensorsService2 = new SensorsService();
+function registerSensorsCommands(program2) {
+  const sensorsCmd = program2.command("sensors").description("Manage feedback sensors (lint, typecheck, test, etc.)");
+  sensorsCmd.command("list").description("List configured sensors").action(async () => {
+    await trackCommandUsage("sensors list");
+    const config = await sensorsService2.readConfig();
+    if (config.sensors.length === 0) {
+      console.log(
+        chalk16.gray(
+          "\n  No sensors configured. Add one with: vem sensors add <name> --cmd <command>\n"
+        )
+      );
+      return;
+    }
+    const table = new Table3({
+      head: ["Name", "Command", "Description"],
+      style: { head: ["cyan"] },
+      colWidths: [16, 40, 30],
+      wordWrap: true
+    });
+    for (const s of config.sensors) {
+      table.push([
+        chalk16.white(s.name),
+        chalk16.gray(s.cmd),
+        s.description ?? ""
+      ]);
+    }
+    console.log(chalk16.bold("\n\u{1F50D}  Feedback Sensors\n"));
+    console.log(table.toString());
+    console.log();
+  });
+  sensorsCmd.command("add <name>").description("Add or update a sensor").requiredOption("--cmd <command>", "Shell command to run").option("--description <text>", "Human-readable description").action(
+    async (name, options) => {
+      await trackCommandUsage("sensors add");
+      await sensorsService2.addSensor({
+        name,
+        cmd: options.cmd,
+        description: options.description
+      });
+      console.log(chalk16.green(`
+\u2714 Sensor '${name}' saved.
+`));
+      console.log(chalk16.gray(`  Run it with: vem sensors run ${name}
+`));
+    }
+  );
+  sensorsCmd.command("remove <name>").description("Remove a sensor by name").action(async (name) => {
+    await trackCommandUsage("sensors remove");
+    const removed = await sensorsService2.removeSensor(name);
+    if (removed) {
+      console.log(chalk16.green(`
+\u2714 Sensor '${name}' removed.
+`));
+    } else {
+      console.error(chalk16.red(`
+\u2716 Sensor '${name}' not found.
+`));
+      process.exitCode = 1;
+    }
+  });
+  sensorsCmd.command("run [name]").description("Run one or all sensors and show results").action(async (name) => {
+    await trackCommandUsage("sensors run");
+    const config = await sensorsService2.readConfig();
+    if (config.sensors.length === 0) {
+      console.log(
+        chalk16.gray(
+          "\n  No sensors configured. Add one with: vem sensors add <name> --cmd <command>\n"
+        )
+      );
+      return;
+    }
+    const toRun = name ? config.sensors.filter((s) => s.name === name) : config.sensors;
+    if (name && toRun.length === 0) {
+      console.error(chalk16.red(`
+\u2716 Sensor '${name}' not found.
+`));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(
+      chalk16.bold(
+        `
+\u{1F50D}  Running ${toRun.length === 1 ? `sensor '${toRun[0]?.name}'` : `${toRun.length} sensors`}...
+`
+      )
+    );
+    let anyFailed = false;
+    for (const sensor of toRun) {
+      process.stdout.write(`  ${chalk16.gray(sensor.name)}  `);
+      const result = await sensorsService2.runSensor(sensor);
+      const duration = `${result.durationMs}ms`;
+      if (result.passed) {
+        console.log(chalk16.green(`\u2713 passed`) + chalk16.gray(` (${duration})`));
+      } else {
+        console.log(
+          chalk16.red(`\u2717 failed`) + chalk16.gray(` (exit ${result.exitCode}, ${duration})`)
+        );
+        anyFailed = true;
+        const outputLines = result.output.split("\n").filter((l) => l.trim()).slice(0, 8);
+        for (const line of outputLines) {
+          console.log(`     ${chalk16.gray(line)}`);
+        }
+        if (result.output.split("\n").filter((l) => l.trim()).length > 8) {
+          console.log(chalk16.gray("     \u2026 (truncated)"));
+        }
+        console.log();
+      }
+    }
+    console.log();
+    if (anyFailed) {
+      process.exitCode = 1;
+    }
+  });
+}
+
+// src/commands/sessions.ts
+import chalk17 from "chalk";
+import Table4 from "cli-table3";
 import prompts7 from "prompts";
 function formatDate(iso) {
   if (!iso) return "\u2014";
@@ -6832,22 +7971,22 @@ function registerSessionsCommands(program2) {
     const limit = Number.parseInt(opts.limit, 10) || 20;
     sessions = sessions.slice(0, limit);
     if (sessions.length === 0) {
-      console.log(chalk16.gray("No agent sessions found for this repository."));
+      console.log(chalk17.gray("No agent sessions found for this repository."));
       return;
     }
     const sourceColor = (src) => {
-      if (src === "copilot") return chalk16.blue(src);
-      if (src === "claude") return chalk16.yellow(src);
-      if (src === "gemini") return chalk16.cyan(src);
-      return chalk16.gray(src);
+      if (src === "copilot") return chalk17.blue(src);
+      if (src === "claude") return chalk17.yellow(src);
+      if (src === "gemini") return chalk17.cyan(src);
+      return chalk17.gray(src);
     };
-    const table = new Table3({
+    const table = new Table4({
       head: [
-        chalk16.bold("Source"),
-        chalk16.bold("ID"),
-        chalk16.bold("Summary"),
-        chalk16.bold("Branch"),
-        chalk16.bold("Updated")
+        chalk17.bold("Source"),
+        chalk17.bold("ID"),
+        chalk17.bold("Summary"),
+        chalk17.bold("Branch"),
+        chalk17.bold("Updated")
       ],
       colWidths: [10, 12, 42, 18, 18],
       style: { head: [], border: ["gray"] }
@@ -6855,17 +7994,17 @@ function registerSessionsCommands(program2) {
     for (const s of sessions) {
       table.push([
         sourceColor(s.source),
-        chalk16.gray(`${s.id.slice(0, 8)}\u2026`),
-        s.summary || chalk16.gray("(no summary)"),
-        chalk16.cyan(s.branch || "\u2014"),
-        chalk16.gray(formatDate(s.updated_at))
+        chalk17.gray(`${s.id.slice(0, 8)}\u2026`),
+        s.summary || chalk17.gray("(no summary)"),
+        chalk17.cyan(s.branch || "\u2014"),
+        chalk17.gray(formatDate(s.updated_at))
       ]);
     }
     console.log(table.toString());
     console.log(
-      chalk16.gray(
+      chalk17.gray(
         `
-Showing ${sessions.length} session(s). Use ${chalk16.white("vem sessions import <id>")} to import a session into project memory.`
+Showing ${sessions.length} session(s). Use ${chalk17.white("vem sessions import <id>")} to import a session into project memory.`
       )
     );
   });
@@ -6877,12 +8016,12 @@ Showing ${sessions.length} session(s). Use ${chalk16.white("vem sessions import 
       const all = await listAllAgentSessions(gitRoot);
       const match = all.find((s) => s.id.startsWith(id));
       if (!match) {
-        console.error(chalk16.red(`No session found matching prefix: ${id}`));
+        console.error(chalk17.red(`No session found matching prefix: ${id}`));
         process.exit(1);
       }
       session = match;
       console.log(
-        chalk16.gray(`Resolved to ${match.source} session: ${match.id}`)
+        chalk17.gray(`Resolved to ${match.source} session: ${match.id}`)
       );
     } else {
       const all = await listAllAgentSessions(gitRoot);
@@ -6907,28 +8046,28 @@ Showing ${sessions.length} session(s). Use ${chalk16.white("vem sessions import 
       }
     }
     if (!session) {
-      console.error(chalk16.red(`Session not found: ${id}`));
+      console.error(chalk17.red(`Session not found: ${id}`));
       process.exit(1);
     }
-    console.log(chalk16.bold("\n\u{1F4CB} Session Summary"));
-    console.log(chalk16.white(`  ID:       ${session.id}`));
-    console.log(chalk16.white(`  Source:   ${session.source}`));
-    console.log(chalk16.white(`  Branch:   ${session.branch || "\u2014"}`));
-    console.log(chalk16.white(`  Updated:  ${formatDate(session.updated_at)}`));
+    console.log(chalk17.bold("\n\u{1F4CB} Session Summary"));
+    console.log(chalk17.white(`  ID:       ${session.id}`));
+    console.log(chalk17.white(`  Source:   ${session.source}`));
+    console.log(chalk17.white(`  Branch:   ${session.branch || "\u2014"}`));
+    console.log(chalk17.white(`  Updated:  ${formatDate(session.updated_at)}`));
     console.log(
-      chalk16.white(`  Summary:  ${session.summary || "(no summary)"}`)
+      chalk17.white(`  Summary:  ${session.summary || "(no summary)"}`)
     );
     if (session.intents.length > 0) {
-      console.log(chalk16.bold("\n\u{1F3AF} Intents recorded in this session:"));
+      console.log(chalk17.bold("\n\u{1F3AF} Intents recorded in this session:"));
       for (const intent of session.intents) {
-        console.log(chalk16.gray(`  \u2022 ${intent}`));
+        console.log(chalk17.gray(`  \u2022 ${intent}`));
       }
     }
     if (session.user_messages.length > 0) {
-      console.log(chalk16.bold("\n\u{1F4AC} First user message:"));
+      console.log(chalk17.bold("\n\u{1F4AC} First user message:"));
       const preview = session.user_messages[0].slice(0, 200);
       console.log(
-        chalk16.gray(
+        chalk17.gray(
           `  ${preview}${session.user_messages[0].length > 200 ? "\u2026" : ""}`
         )
       );
@@ -6949,7 +8088,7 @@ Showing ${sessions.length} session(s). Use ${chalk16.white("vem sessions import 
         `- ${changelogEntry}`,
         gitHash ? { commitHash: gitHash } : void 0
       );
-      console.log(chalk16.green("\u2713 Changelog entry added."));
+      console.log(chalk17.green("\u2713 Changelog entry added."));
     }
     const taskService2 = new TaskService();
     const tasks = await taskService2.getTasks();
@@ -6991,18 +8130,18 @@ Showing ${sessions.length} session(s). Use ${chalk16.white("vem sessions import 
             ...sessionRef ? { sessions: [...existingSessions, sessionRef] } : {}
           });
           console.log(
-            chalk16.green(`\u2713 Linked to task ${taskId} with evidence.`)
+            chalk17.green(`\u2713 Linked to task ${taskId} with evidence.`)
           );
         }
       }
     }
-    console.log(chalk16.bold("\n\u2705 Done."));
+    console.log(chalk17.bold("\n\u2705 Done."));
   });
 }
 
 // src/commands/setup.ts
 import path3 from "path";
-import chalk17 from "chalk";
+import chalk18 from "chalk";
 import fs5 from "fs-extra";
 import prompts8 from "prompts";
 var COMMAND_BASELINE = [
@@ -7154,40 +8293,40 @@ var formatRelativeTime = (timestamp) => {
 };
 var renderUsageInsights = (stats, detailed = false) => {
   const entries = getSortedCommandEntries(stats);
-  console.log(chalk17.bold("\n\u{1F4C8} Command Insights\n"));
+  console.log(chalk18.bold("\n\u{1F4C8} Command Insights\n"));
   if (entries.length === 0) {
-    console.log(chalk17.gray("  No command usage recorded yet."));
-    console.log(chalk17.gray("  Start with: vem quickstart"));
+    console.log(chalk18.gray("  No command usage recorded yet."));
+    console.log(chalk18.gray("  Start with: vem quickstart"));
     return;
   }
   const rows = detailed ? entries : entries.slice(0, 6);
-  console.log(chalk17.gray(`  Commands tracked: ${entries.length}`));
+  console.log(chalk18.gray(`  Commands tracked: ${entries.length}`));
   rows.forEach(([command, count], index) => {
     console.log(
-      `  ${chalk17.gray(`${index + 1}.`)} ${chalk17.white(command)} ${chalk17.gray(`(${count})`)}`
+      `  ${chalk18.gray(`${index + 1}.`)} ${chalk18.white(command)} ${chalk18.gray(`(${count})`)}`
     );
   });
   if (!detailed && entries.length > rows.length) {
-    console.log(chalk17.gray(`  ...and ${entries.length - rows.length} more`));
+    console.log(chalk18.gray(`  ...and ${entries.length - rows.length} more`));
   }
   const neverUsed = COMMAND_BASELINE.filter(
     (command) => (stats.commandCounts[command] || 0) === 0
   );
   if (neverUsed.length > 0) {
-    console.log(chalk17.gray("\n  Suggested next commands:"));
+    console.log(chalk18.gray("\n  Suggested next commands:"));
     neverUsed.slice(0, 3).forEach((command) => {
-      console.log(`    ${chalk17.cyan(command)}`);
+      console.log(`    ${chalk18.cyan(command)}`);
     });
   }
   if (stats.lastPush) {
     console.log(
-      chalk17.gray(`
+      chalk18.gray(`
   Last push: ${formatRelativeTime(stats.lastPush)}`)
     );
   }
   if (stats.lastAgentRun) {
     console.log(
-      chalk17.gray(
+      chalk18.gray(
         `  Last agent session: ${formatRelativeTime(stats.lastAgentRun)}`
       )
     );
@@ -7198,7 +8337,7 @@ function registerSetupCommands(program2) {
     try {
       if (await hasUncommittedChanges()) {
         console.log(
-          chalk17.yellow(
+          chalk18.yellow(
             "\n\u26A0 Uncommitted changes detected in this workspace.\n"
           )
         );
@@ -7209,7 +8348,7 @@ function registerSetupCommands(program2) {
           initial: false
         });
         if (!proceed.confirmInit) {
-          console.log(chalk17.yellow("Initialization cancelled.\n"));
+          console.log(chalk18.yellow("Initialization cancelled.\n"));
           return;
         }
       }
@@ -7220,19 +8359,19 @@ function registerSetupCommands(program2) {
       const initHash = await computeVemHash();
       await configService.setLastSyncedVemHash(initHash);
       const agentInstructions = await ensureAgentInstructionPolicy();
-      console.log(chalk17.green(`
+      console.log(chalk18.green(`
 \u2714 vem initialized at ${dir}
 `));
       if (agentInstructions.createdAgentsFile) {
         console.log(
-          chalk17.gray(
+          chalk18.gray(
             "Created AGENTS.md because no agent instruction files were found."
           )
         );
       }
       if (agentInstructions.updatedFiles.length > 0) {
         console.log(
-          chalk17.gray(
+          chalk18.gray(
             `Updated agent instructions: ${agentInstructions.updatedFiles.join(", ")}`
           )
         );
@@ -7256,11 +8395,11 @@ function registerSetupCommands(program2) {
             );
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            console.log(chalk17.yellow(`\u26A0 Link skipped: ${msg}`));
+            console.log(chalk18.yellow(`\u26A0 Link skipped: ${msg}`));
           }
         } else {
           console.log(
-            chalk17.gray(
+            chalk18.gray(
               "Tip: Run `vem link` at any time to connect this repo to a project."
             )
           );
@@ -7274,26 +8413,26 @@ function registerSetupCommands(program2) {
             apiKey
           );
           console.log(
-            chalk17.gray(
+            chalk18.gray(
               `Synced ${syncedCount} agent instruction file${syncedCount === 1 ? "" : "s"} to cloud memory.`
             )
           );
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           console.log(
-            chalk17.yellow(`\u26A0 Agent instruction sync skipped: ${message}`)
+            chalk18.yellow(`\u26A0 Agent instruction sync skipped: ${message}`)
           );
         }
         const gitHash = getGitHash();
         if (!gitHash) {
           console.log(
-            chalk17.gray(
+            chalk18.gray(
               "Tip: Run `vem push` after your first commit to sync local state to the cloud."
             )
           );
         } else {
           try {
-            console.log(chalk17.blue("\u{1F4E6} Syncing local state to cloud..."));
+            console.log(chalk18.blue("\u{1F4E6} Syncing local state to cloud..."));
             const snapshot = await syncService.pack();
             const snapshotHash = computeSnapshotHash(snapshot);
             const vemHash = await computeVemHash();
@@ -7311,38 +8450,38 @@ function registerSetupCommands(program2) {
                 await configService.setLastPushState({ gitHash, vemHash });
                 await configService.setLastSyncedVemHash(vemHash);
               }
-              console.log(chalk17.green("\u2714 Local state synced to cloud.\n"));
+              console.log(chalk18.green("\u2714 Local state synced to cloud.\n"));
             } else {
               console.log(
-                chalk17.yellow(
+                chalk18.yellow(
                   `\u26A0 Auto-sync skipped: ${result.error ?? "unknown error"}`
                 )
               );
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            console.log(chalk17.yellow(`\u26A0 Auto-sync skipped: ${message}`));
+            console.log(chalk18.yellow(`\u26A0 Auto-sync skipped: ${message}`));
           }
         }
       } else if (!apiKey) {
         console.log(
-          chalk17.gray(
+          chalk18.gray(
             "Tip: Use the web dashboard project settings to run reindexing after `vem login` + `vem link`."
           )
         );
       }
     } catch (error) {
-      console.error(chalk17.red("\n\u2716 Failed to initialize vem:"), error);
+      console.error(chalk18.red("\n\u2716 Failed to initialize vem:"), error);
       process.exit(1);
     }
   });
   program2.command("quickstart").description("Interactive guide to powerful VEM workflows").action(async () => {
     await trackCommandUsage("quickstart");
-    console.log(chalk17.bold.cyan("\n\u{1F680} VEM Quickstart Guide\n"));
+    console.log(chalk18.bold.cyan("\n\u{1F680} VEM Quickstart Guide\n"));
     console.log("Let's set up a powerful agent-driven workflow!\n");
     const configService = new ConfigService();
     if (!await isVemInitialized()) {
-      console.log(chalk17.yellow("Step 1: Initialize VEM\n"));
+      console.log(chalk18.yellow("Step 1: Initialize VEM\n"));
       const initResponse = await prompts8({
         type: "confirm",
         name: "init",
@@ -7350,7 +8489,7 @@ function registerSetupCommands(program2) {
         initial: true
       });
       if (!initResponse.init) {
-        console.log(chalk17.yellow("Quickstart cancelled."));
+        console.log(chalk18.yellow("Quickstart cancelled."));
         return;
       }
       try {
@@ -7359,13 +8498,13 @@ function registerSetupCommands(program2) {
         await ensureVemGitignoreEntry();
         const initHash = await computeVemHash();
         await configService.setLastSyncedVemHash(initHash);
-        console.log(chalk17.green("\u2713 VEM initialized\n"));
+        console.log(chalk18.green("\u2713 VEM initialized\n"));
       } catch (error) {
-        console.error(chalk17.red("Failed to initialize:"), error.message);
+        console.error(chalk18.red("Failed to initialize:"), error.message);
         return;
       }
     } else {
-      console.log(chalk17.green("\u2713 VEM already initialized\n"));
+      console.log(chalk18.green("\u2713 VEM already initialized\n"));
     }
     let isAuthenticated = false;
     try {
@@ -7375,7 +8514,7 @@ function registerSetupCommands(program2) {
       isAuthenticated = false;
     }
     if (!isAuthenticated) {
-      console.log(chalk17.yellow("Step 2: Authenticate\n"));
+      console.log(chalk18.yellow("Step 2: Authenticate\n"));
       console.log("Get your API key from: https://vem.dev/keys\n");
       const authResponse = await prompts8({
         type: "text",
@@ -7383,17 +8522,17 @@ function registerSetupCommands(program2) {
         message: "Paste your API key:"
       });
       if (!authResponse.apiKey) {
-        console.log(chalk17.yellow("Quickstart cancelled."));
+        console.log(chalk18.yellow("Quickstart cancelled."));
         return;
       }
       await configService.setApiKey(authResponse.apiKey);
-      console.log(chalk17.green("\u2713 Authenticated\n"));
+      console.log(chalk18.green("\u2713 Authenticated\n"));
     } else {
-      console.log(chalk17.green("\u2713 Already authenticated\n"));
+      console.log(chalk18.green("\u2713 Already authenticated\n"));
     }
     const projectId = await configService.getProjectId().catch(() => null);
     if (!projectId) {
-      console.log(chalk17.yellow("Step 3: Link to project\n"));
+      console.log(chalk18.yellow("Step 3: Link to project\n"));
       console.log("This connects your local .vem/ to cloud sync.\n");
       const linkResponse = await prompts8({
         type: "confirm",
@@ -7402,14 +8541,14 @@ function registerSetupCommands(program2) {
         initial: true
       });
       if (linkResponse.link) {
-        console.log(chalk17.cyan("\nRun: vem link"));
-        console.log(chalk17.gray("(You can select or create a project)\n"));
+        console.log(chalk18.cyan("\nRun: vem link"));
+        console.log(chalk18.gray("(You can select or create a project)\n"));
       }
     } else {
-      console.log(chalk17.green(`\u2713 Linked to project: ${projectId}
+      console.log(chalk18.green(`\u2713 Linked to project: ${projectId}
 `));
     }
-    console.log(chalk17.bold.cyan("\n\u{1F4CB} Task-Driven Workflow\n"));
+    console.log(chalk18.bold.cyan("\n\u{1F4CB} Task-Driven Workflow\n"));
     console.log(
       "Tasks help you track work and provide context to AI agents.\n"
     );
@@ -7439,11 +8578,11 @@ function registerSetupCommands(program2) {
           taskDetails.description || "",
           "medium"
         );
-        console.log(chalk17.green(`
+        console.log(chalk18.green(`
 \u2713 Created task: ${task.id}`));
       }
     }
-    console.log(chalk17.bold.cyan("\n\u{1F916} Agent-Driven Development\n"));
+    console.log(chalk18.bold.cyan("\n\u{1F916} Agent-Driven Development\n"));
     console.log("The 'vem agent' command wraps AI tools with:\n");
     console.log("  \u2022 Automatic context injection");
     console.log("  \u2022 Task tracking");
@@ -7456,36 +8595,36 @@ function registerSetupCommands(program2) {
       initial: false
     });
     if (agentResponse.launchAgent) {
-      console.log(chalk17.cyan("\n\u{1F680} Launching agent...\n"));
-      console.log(chalk17.white("Run: vem agent\n"));
+      console.log(chalk18.cyan("\n\u{1F680} Launching agent...\n"));
+      console.log(chalk18.white("Run: vem agent\n"));
     }
-    console.log(chalk17.bold.cyan("\n\u2728 Quick Reference\n"));
+    console.log(chalk18.bold.cyan("\n\u2728 Quick Reference\n"));
     console.log(
-      chalk17.white("  vem agent") + chalk17.gray("         # Start AI-assisted work")
+      chalk18.white("  vem agent") + chalk18.gray("         # Start AI-assisted work")
     );
     console.log(
-      chalk17.white("  vem task list") + chalk17.gray("     # View tasks")
+      chalk18.white("  vem task list") + chalk18.gray("     # View tasks")
     );
     console.log(
-      chalk17.white("  vem task add") + chalk17.gray("      # Create task")
+      chalk18.white("  vem task add") + chalk18.gray("      # Create task")
     );
     console.log(
-      chalk17.white("  vem push") + chalk17.gray("          # Sync to cloud")
+      chalk18.white("  vem push") + chalk18.gray("          # Sync to cloud")
     );
     console.log(
-      chalk17.white("  vem search") + chalk17.gray("        # Query memory")
+      chalk18.white("  vem search") + chalk18.gray("        # Query memory")
     );
     console.log(
-      chalk17.white("  vem status") + chalk17.gray("        # Check power score\n")
+      chalk18.white("  vem status") + chalk18.gray("        # Check power score\n")
     );
-    console.log(chalk17.green("\u{1F389} You're ready to use VEM powerfully!\n"));
+    console.log(chalk18.green("\u{1F389} You're ready to use VEM powerfully!\n"));
   });
   program2.command("status").description("Show current project status").action(async () => {
     await trackCommandUsage("status");
     try {
       await ensureVemFiles();
       const configService = new ConfigService();
-      console.log(chalk17.bold("\n\u{1F4CA} vem Status\n"));
+      console.log(chalk18.bold("\n\u{1F4CA} vem Status\n"));
       const apiKey = await configService.getApiKey();
       if (apiKey) {
         try {
@@ -7498,28 +8637,28 @@ function registerSetupCommands(program2) {
           if (response.ok) {
             const data = await response.json();
             console.log(
-              `Login Status: ${chalk17.green("Logged In")} (User: ${data.userId})`
+              `Login Status: ${chalk18.green("Logged In")} (User: ${data.userId})`
             );
             console.log(
-              chalk17.gray("               (Run `vem logout` to sign out)")
+              chalk18.gray("               (Run `vem logout` to sign out)")
             );
           } else {
             console.log(
-              `Login Status: ${chalk17.red(
+              `Login Status: ${chalk18.red(
                 "Invalid Session"
               )} (Run \`vem login\` to fix)`
             );
           }
         } catch (_err) {
           console.log(
-            `Login Status: ${chalk17.yellow(
+            `Login Status: ${chalk18.yellow(
               "Logged In (Offline/Unverified)"
             )} (Cannot reach API)`
           );
         }
       } else {
         console.log(
-          `Login Status: ${chalk17.red(
+          `Login Status: ${chalk18.red(
             "Not Logged In"
           )} (Run \`vem login\` options)`
         );
@@ -7534,25 +8673,25 @@ function registerSetupCommands(program2) {
           );
           if (check.valid) {
             const label = check.name ? `${check.name} (${projectId})` : projectId;
-            console.log(`Linked Project: ${chalk17.green(label)}`);
+            console.log(`Linked Project: ${chalk18.green(label)}`);
           } else {
             console.log(
-              `Linked Project: ${chalk17.red(projectId)} ${chalk17.red("(not found \u2014 project may have been deleted)")}`
+              `Linked Project: ${chalk18.red(projectId)} ${chalk18.red("(not found \u2014 project may have been deleted)")}`
             );
             console.log(
-              chalk17.gray(
+              chalk18.gray(
                 "               Run `vem unlink` then `vem link` to fix."
               )
             );
           }
         } else {
           console.log(
-            `Linked Project: ${chalk17.yellow(projectId)} (unverified \u2014 not logged in)`
+            `Linked Project: ${chalk18.yellow(projectId)} (unverified \u2014 not logged in)`
           );
         }
       } else {
         console.log(
-          `Linked Project: ${chalk17.yellow("Not Linked")} (Run \`vem link\`)`
+          `Linked Project: ${chalk18.yellow("Not Linked")} (Run \`vem link\`)`
         );
       }
       try {
@@ -7565,17 +8704,17 @@ function registerSetupCommands(program2) {
         ).length;
         console.log(`
 Local Tasks:`);
-        console.log(`  Open:      ${chalk17.yellow(active)}`);
-        console.log(`  Completed: ${chalk17.green(completed)}`);
+        console.log(`  Open:      ${chalk18.yellow(active)}`);
+        console.log(`  Completed: ${chalk18.green(completed)}`);
       } catch (_err) {
         console.log(
           `
-Local Tasks:   ${chalk17.gray("Not initialized (Run `vem init`)")}`
+Local Tasks:   ${chalk18.gray("Not initialized (Run `vem init`)")}`
         );
       }
       const stats = await metricsService.getStats();
-      console.log(chalk17.bold("\n\u26A1 Power Feature Usage\n"));
-      const scoreColor = stats.powerScore >= 70 ? chalk17.green : stats.powerScore >= 40 ? chalk17.yellow : chalk17.gray;
+      console.log(chalk18.bold("\n\u26A1 Power Feature Usage\n"));
+      const scoreColor = stats.powerScore >= 70 ? chalk18.green : stats.powerScore >= 40 ? chalk18.yellow : chalk18.gray;
       console.log(`  Power Score: ${scoreColor(`${stats.powerScore}/100`)}`);
       const features = [
         {
@@ -7609,34 +8748,34 @@ Local Tasks:   ${chalk17.gray("Not initialized (Run `vem init`)")}`
           points: 5
         }
       ];
-      console.log(chalk17.gray("\n  Features:"));
+      console.log(chalk18.gray("\n  Features:"));
       for (const feature of features) {
-        const icon = feature.used ? chalk17.green("\u2713") : chalk17.gray("\u25CB");
-        const name = feature.used ? chalk17.white(feature.name) : chalk17.gray(feature.name);
-        const pts = feature.used ? chalk17.green(`+${feature.points}`) : chalk17.gray(`+${feature.points}`);
+        const icon = feature.used ? chalk18.green("\u2713") : chalk18.gray("\u25CB");
+        const name = feature.used ? chalk18.white(feature.name) : chalk18.gray(feature.name);
+        const pts = feature.used ? chalk18.green(`+${feature.points}`) : chalk18.gray(`+${feature.points}`);
         console.log(`    ${icon} ${name} ${pts}`);
       }
       if (stats.powerScore < 40) {
         console.log(
-          chalk17.yellow(
+          chalk18.yellow(
             "\n  \u{1F4A1} Tip: Try 'vem agent' to unlock powerful workflows"
           )
         );
       } else if (stats.powerScore < 70) {
         console.log(
-          chalk17.cyan(
+          chalk18.cyan(
             "\n  \u{1F4A1} You're on your way! Keep using task-driven workflows"
           )
         );
       } else {
         console.log(
-          chalk17.green("\n  \u{1F389} Excellent! You're using VEM like a pro")
+          chalk18.green("\n  \u{1F389} Excellent! You're using VEM like a pro")
         );
       }
       if (stats.lastAgentRun) {
         const timeSince = Date.now() - stats.lastAgentRun;
         const days = Math.floor(timeSince / (1e3 * 60 * 60 * 24));
-        console.log(chalk17.bold("\n\u{1F4C5} Recent Activity\n"));
+        console.log(chalk18.bold("\n\u{1F4C5} Recent Activity\n"));
         console.log(
           `  Last agent session: ${days === 0 ? "today" : `${days} days ago`}`
         );
@@ -7644,7 +8783,7 @@ Local Tasks:   ${chalk17.gray("Not initialized (Run `vem init`)")}`
       renderUsageInsights(stats, false);
       console.log("");
     } catch (error) {
-      console.error(chalk17.red("\n\u2716 Failed to check status:"), error.message);
+      console.error(chalk18.red("\n\u2716 Failed to check status:"), error.message);
     }
   });
   program2.command("insights").description("Show detailed usage metrics and workflow insights").option("--json", "Output raw usage metrics as JSON").action(async (options) => {
@@ -7656,12 +8795,12 @@ Local Tasks:   ${chalk17.gray("Not initialized (Run `vem init`)")}`
         console.log(JSON.stringify(stats, null, 2));
         return;
       }
-      console.log(chalk17.bold("\n\u{1F4CA} vem Insights\n"));
-      console.log(`Power Score: ${chalk17.cyan(`${stats.powerScore}/100`)}`);
+      console.log(chalk18.bold("\n\u{1F4CA} vem Insights\n"));
+      console.log(`Power Score: ${chalk18.cyan(`${stats.powerScore}/100`)}`);
       renderUsageInsights(stats, true);
       console.log("");
     } catch (error) {
-      console.error(chalk17.red("\n\u2716 Failed to load insights:"), error.message);
+      console.error(chalk18.red("\n\u2716 Failed to load insights:"), error.message);
     }
   });
 }
@@ -7670,7 +8809,7 @@ Local Tasks:   ${chalk17.gray("Not initialized (Run `vem init`)")}`
 import { execSync as execSync4, spawnSync } from "child_process";
 import * as fs6 from "fs/promises";
 import * as path4 from "path";
-import chalk18 from "chalk";
+import chalk19 from "chalk";
 import prompts9 from "prompts";
 var SKILLS_LOCK_FILE = "skills-lock.json";
 async function getRepoRoot4() {
@@ -7750,16 +8889,33 @@ function registerSkillsCommands(program2) {
   const skillsCmd = program2.command("skills").description("Manage agent skills for this project");
   skillsCmd.command("add <source>").description("Install skills from a GitHub source (e.g. mattpocock/skills)").option("--no-push", "Skip the prompt to push skills to vem cloud").action(async (source, options) => {
     await trackCommandUsage("skills.add");
-    console.log(chalk18.blue(`\u2B07  Installing skills from ${source}...`));
+    console.log(chalk19.blue(`\u2B07  Installing skills from ${source}...`));
     const ok = runSkillsCmd(["add", source]);
     if (!ok) {
-      console.error(chalk18.red("\n\u2716 skills install failed."));
+      console.error(chalk19.red("\n\u2716 skills install failed."));
       process.exitCode = 1;
       return;
     }
-    console.log(chalk18.green(`
+    console.log(chalk19.green(`
 \u2714 Skills from ${source} installed.
 `));
+    try {
+      const repoRoot = await getRepoRoot4();
+      const lock = await readSkillsLock(repoRoot);
+      if (lock?.skills) {
+        const unverified = Object.entries(lock.skills).filter(
+          ([, s]) => !s.computedHash
+        );
+        if (unverified.length > 0) {
+          console.log(
+            chalk19.yellow(
+              `\u26A0  ${unverified.length} skill(s) have no checksum \u2014 run \`vem skills verify\` to audit them.`
+            )
+          );
+        }
+      }
+    } catch {
+    }
     if (options.push !== false) {
       const shouldPush = await promptPushToCloud();
       if (shouldPush) {
@@ -7773,20 +8929,20 @@ function registerSkillsCommands(program2) {
     const lock = await readSkillsLock(repoRoot);
     if (!lock || Object.keys(lock.skills ?? {}).length === 0) {
       console.log(
-        chalk18.yellow(
+        chalk19.yellow(
           "No skills installed. Run `vem skills add <source>` to get started."
         )
       );
       return;
     }
-    console.log(chalk18.bold("\nInstalled Skills:\n"));
+    console.log(chalk19.bold("\nInstalled Skills:\n"));
     for (const [name, skill] of Object.entries(lock.skills)) {
       console.log(
-        `  ${chalk18.cyan(name)} ${chalk18.gray(`\u2190 ${skill.source} \xB7 ${skill.skillPath}`)}`
+        `  ${chalk19.cyan(name)} ${chalk19.gray(`\u2190 ${skill.source} \xB7 ${skill.skillPath}`)}`
       );
     }
     console.log(
-      chalk18.gray(
+      chalk19.gray(
         `
   ${Object.keys(lock.skills).length} skill(s) total \xB7 skills-lock.json v${lock.version}
 `
@@ -7795,14 +8951,14 @@ function registerSkillsCommands(program2) {
   });
   skillsCmd.command("remove <skill>").description("Remove an installed skill").option("--no-push", "Skip the prompt to push skills to vem cloud").action(async (skill, options) => {
     await trackCommandUsage("skills.remove");
-    console.log(chalk18.blue(`\u{1F5D1}  Removing skill ${skill}...`));
+    console.log(chalk19.blue(`\u{1F5D1}  Removing skill ${skill}...`));
     const ok = runSkillsCmd(["remove", skill]);
     if (!ok) {
-      console.error(chalk18.red("\n\u2716 skills remove failed."));
+      console.error(chalk19.red("\n\u2716 skills remove failed."));
       process.exitCode = 1;
       return;
     }
-    console.log(chalk18.green(`
+    console.log(chalk19.green(`
 \u2714 Skill ${skill} removed.
 `));
     if (options.push !== false) {
@@ -7816,17 +8972,17 @@ function registerSkillsCommands(program2) {
     await trackCommandUsage("skills.update");
     const args = source ? ["update", source] : ["update"];
     console.log(
-      chalk18.blue(
+      chalk19.blue(
         source ? `\u27F3  Updating skills from ${source}...` : "\u27F3  Updating all installed skills..."
       )
     );
     const ok = runSkillsCmd(args);
     if (!ok) {
-      console.error(chalk18.red("\n\u2716 skills update failed."));
+      console.error(chalk19.red("\n\u2716 skills update failed."));
       process.exitCode = 1;
       return;
     }
-    console.log(chalk18.green("\n\u2714 Skills updated.\n"));
+    console.log(chalk19.green("\n\u2714 Skills updated.\n"));
     if (options.push !== false) {
       const shouldPush = await promptPushToCloud();
       if (shouldPush) {
@@ -7846,14 +9002,14 @@ function registerSkillsCommands(program2) {
       const projectId = await configService.getProjectId();
       if (!projectId) {
         console.error(
-          chalk18.red(
+          chalk19.red(
             "Error: No project linked. Run `vem link <projectId>` first."
           )
         );
         process.exitCode = 1;
         return;
       }
-      console.log(chalk18.blue("\u2B07  Fetching skills from cloud..."));
+      console.log(chalk19.blue("\u2B07  Fetching skills from cloud..."));
       const res = await fetch(`${API_URL}/projects/${projectId}/skills`, {
         headers: {
           Authorization: `Bearer ${key}`,
@@ -7869,7 +9025,7 @@ function registerSkillsCommands(program2) {
       const data = await res.json();
       if (!data.version_number) {
         console.log(
-          chalk18.yellow("No skills snapshot in cloud. Nothing to pull.")
+          chalk19.yellow("No skills snapshot in cloud. Nothing to pull.")
         );
         return;
       }
@@ -7884,14 +9040,14 @@ function registerSkillsCommands(program2) {
           initial: false
         });
         if (!overwrite) {
-          console.log(chalk18.yellow(`  \u2298 Skipped ${SKILLS_LOCK_FILE}`));
+          console.log(chalk19.yellow(`  \u2298 Skipped ${SKILLS_LOCK_FILE}`));
         } else {
           await fs6.writeFile(
             lockDest,
             JSON.stringify(data.skills_lock, null, 2),
             "utf-8"
           );
-          console.log(chalk18.green(`  \u2714 ${SKILLS_LOCK_FILE}`));
+          console.log(chalk19.green(`  \u2714 ${SKILLS_LOCK_FILE}`));
         }
       } else {
         await fs6.writeFile(
@@ -7899,7 +9055,7 @@ function registerSkillsCommands(program2) {
           JSON.stringify(data.skills_lock, null, 2),
           "utf-8"
         );
-        console.log(chalk18.green(`  \u2714 ${SKILLS_LOCK_FILE}`));
+        console.log(chalk19.green(`  \u2714 ${SKILLS_LOCK_FILE}`));
       }
       let written = 0;
       let skipped = 0;
@@ -7928,7 +9084,7 @@ function registerSkillsCommands(program2) {
         const dest = path4.resolve(repoRoot, localRelPath);
         const resolvedRoot = path4.resolve(repoRoot);
         if (!dest.startsWith(`${resolvedRoot}${path4.sep}`) && dest !== resolvedRoot) {
-          console.warn(chalk18.yellow(`Skipping unsafe path: ${localRelPath}`));
+          console.warn(chalk19.yellow(`Skipping unsafe path: ${localRelPath}`));
           continue;
         }
         if (!options.force) {
@@ -7941,7 +9097,7 @@ function registerSkillsCommands(program2) {
               initial: false
             });
             if (!overwrite) {
-              console.log(chalk18.yellow(`  \u2298 Skipped ${localRelPath}`));
+              console.log(chalk19.yellow(`  \u2298 Skipped ${localRelPath}`));
               skipped++;
               continue;
             }
@@ -7949,12 +9105,12 @@ function registerSkillsCommands(program2) {
         }
         await fs6.mkdir(path4.dirname(dest), { recursive: true });
         await fs6.writeFile(dest, entry.content, "utf-8");
-        console.log(chalk18.green(`  \u2714 ${localRelPath}`));
+        console.log(chalk19.green(`  \u2714 ${localRelPath}`));
         written++;
       }
       const skippedMsg = skipped > 0 ? `, ${skipped} skipped` : "";
       console.log(
-        chalk18.green(
+        chalk19.green(
           `
 \u2714 Pulled v${data.version_number}: ${written} skill file(s)${skippedMsg}.
 `
@@ -7962,7 +9118,7 @@ function registerSkillsCommands(program2) {
       );
     } catch (error) {
       console.error(
-        chalk18.red("\n\u2716 Skills pull failed:"),
+        chalk19.red("\n\u2716 Skills pull failed:"),
         error instanceof Error ? error.message : String(error)
       );
       process.exitCode = 1;
@@ -7976,7 +9132,7 @@ function registerSkillsCommands(program2) {
       const projectId = await configService.getProjectId();
       if (!projectId) {
         console.error(
-          chalk18.red(
+          chalk19.red(
             "Error: No project linked. Run `vem link <projectId>` first."
           )
         );
@@ -8003,9 +9159,9 @@ function registerSkillsCommands(program2) {
       const localSkills = Object.keys(localLock?.skills ?? {});
       const cloudSkills = Object.keys(cloudData.skills_lock?.skills ?? {});
       const allSkills = /* @__PURE__ */ new Set([...localSkills, ...cloudSkills]);
-      console.log(chalk18.bold("\nSkills sync status:\n"));
+      console.log(chalk19.bold("\nSkills sync status:\n"));
       if (allSkills.size === 0) {
-        console.log(chalk18.gray("  No skills installed or in cloud."));
+        console.log(chalk19.gray("  No skills installed or in cloud."));
       } else {
         let inSync = true;
         for (const skill of [...allSkills].sort()) {
@@ -8013,25 +9169,25 @@ function registerSkillsCommands(program2) {
           const isCloud = cloudSkills.includes(skill);
           if (isLocal && !isCloud) {
             console.log(
-              chalk18.cyan(`  \u2191 ${skill}`) + chalk18.gray(" (local only \u2014 run `vem skills push`)")
+              chalk19.cyan(`  \u2191 ${skill}`) + chalk19.gray(" (local only \u2014 run `vem skills push`)")
             );
             inSync = false;
           } else if (!isLocal && isCloud) {
             console.log(
-              chalk18.yellow(`  \u2193 ${skill}`) + chalk18.gray(" (cloud only \u2014 run `vem skills pull`)")
+              chalk19.yellow(`  \u2193 ${skill}`) + chalk19.gray(" (cloud only \u2014 run `vem skills pull`)")
             );
             inSync = false;
           } else {
             console.log(
-              chalk18.green(`  \u2714 ${skill}`) + chalk18.gray(" (in sync)")
+              chalk19.green(`  \u2714 ${skill}`) + chalk19.gray(" (in sync)")
             );
           }
         }
-        const cloudVersionNote = cloudData.version_number ? chalk18.gray(` \xB7 cloud v${cloudData.version_number}`) : chalk18.gray(" \xB7 no cloud snapshot");
+        const cloudVersionNote = cloudData.version_number ? chalk19.gray(` \xB7 cloud v${cloudData.version_number}`) : chalk19.gray(" \xB7 no cloud snapshot");
         console.log(
-          inSync ? chalk18.green(`
+          inSync ? chalk19.green(`
 \u2714 Skills are in sync.${cloudVersionNote}
-`) : chalk18.yellow(
+`) : chalk19.yellow(
             `
 \u26A0 Skills are out of sync.${cloudVersionNote}
 `
@@ -8040,7 +9196,7 @@ function registerSkillsCommands(program2) {
       }
     } catch (error) {
       console.error(
-        chalk18.red("\n\u2716 Skills status check failed:"),
+        chalk19.red("\n\u2716 Skills status check failed:"),
         error instanceof Error ? error.message : String(error)
       );
       process.exitCode = 1;
@@ -8054,7 +9210,7 @@ function registerSkillsCommands(program2) {
       const projectId = await configService.getProjectId();
       if (!projectId) {
         console.error(
-          chalk18.red(
+          chalk19.red(
             "Error: No project linked. Run `vem link <projectId>` first."
           )
         );
@@ -8083,27 +9239,132 @@ function registerSkillsCommands(program2) {
       const data = await res.json();
       const versions = data.versions ?? [];
       if (versions.length === 0) {
-        console.log(chalk18.yellow("No skills versions found in cloud."));
+        console.log(chalk19.yellow("No skills versions found in cloud."));
         return;
       }
-      console.log(chalk18.bold("\nSkills Version History:\n"));
+      console.log(chalk19.bold("\nSkills Version History:\n"));
       for (const [index, version] of versions.entries()) {
         const isLatest = index === 0;
         const date = new Date(version.created_at).toLocaleString();
-        const tag = isLatest ? chalk18.green(" [current]") : "";
-        const msg = version.commit_message ? chalk18.gray(` \u2014 ${version.commit_message}`) : "";
+        const tag = isLatest ? chalk19.green(" [current]") : "";
+        const msg = version.commit_message ? chalk19.gray(` \u2014 ${version.commit_message}`) : "";
         console.log(
-          `  ${chalk18.bold(`v${version.version_number}`)}${tag}${msg}`
+          `  ${chalk19.bold(`v${version.version_number}`)}${tag}${msg}`
         );
-        console.log(chalk18.gray(`    ${date} \xB7 id: ${version.id}`));
+        console.log(chalk19.gray(`    ${date} \xB7 id: ${version.id}`));
       }
       console.log();
     } catch (error) {
       console.error(
-        chalk18.red("\n\u2716 Failed to fetch skills versions:"),
+        chalk19.red("\n\u2716 Failed to fetch skills versions:"),
         error instanceof Error ? error.message : String(error)
       );
       process.exitCode = 1;
+    }
+  });
+  skillsCmd.command("verify").description(
+    "Verify SHA-256 checksums of installed skills against skills-lock.json"
+  ).option(
+    "--fix",
+    "Update skills-lock.json with current checksums (after manual review)"
+  ).action(async (options) => {
+    await trackCommandUsage("skills.verify");
+    const { createHash: createHash2 } = await import("crypto");
+    const repoRoot = await getRepoRoot4();
+    const lock = await readSkillsLock(repoRoot);
+    if (!lock || Object.keys(lock.skills ?? {}).length === 0) {
+      console.log(chalk19.yellow("No skills installed. Nothing to verify."));
+      return;
+    }
+    let allPass = true;
+    const results = [];
+    for (const [name, skill] of Object.entries(lock.skills)) {
+      if (!skill.computedHash) {
+        results.push({ name, status: "missing" });
+        allPass = false;
+        continue;
+      }
+      const absPath = await resolveSkillLocalPath(
+        repoRoot,
+        name,
+        skill.skillPath
+      );
+      if (!absPath) {
+        results.push({ name, status: "missing" });
+        allPass = false;
+        continue;
+      }
+      try {
+        const content = await fs6.readFile(absPath, "utf-8");
+        const currentHash = createHash2("sha256").update(content).digest("hex");
+        const pass = currentHash === skill.computedHash;
+        results.push({
+          name,
+          status: pass ? "pass" : "fail",
+          current: currentHash,
+          expected: skill.computedHash
+        });
+        if (!pass) allPass = false;
+      } catch {
+        results.push({ name, status: "missing" });
+        allPass = false;
+      }
+    }
+    console.log(chalk19.bold("\nSkills Verification:\n"));
+    for (const r of results) {
+      if (r.status === "pass") {
+        console.log(`  ${chalk19.green("\u2714")} ${chalk19.cyan(r.name)}`);
+      } else if (r.status === "fail") {
+        console.log(
+          `  ${chalk19.red("\u2716")} ${chalk19.cyan(r.name)} ${chalk19.red("CHECKSUM MISMATCH")}`
+        );
+        console.log(chalk19.gray(`    expected: ${r.expected}`));
+        console.log(chalk19.gray(`    current:  ${r.current}`));
+      } else {
+        console.log(
+          `  ${chalk19.yellow("?")} ${chalk19.cyan(r.name)} ${chalk19.yellow("FILE NOT FOUND")}`
+        );
+      }
+    }
+    if (allPass) {
+      console.log(chalk19.green("\n\u2714 All skills verified.\n"));
+    } else {
+      if (options.fix) {
+        const lockPath = path4.join(repoRoot, SKILLS_LOCK_FILE);
+        const current = lock;
+        for (const r of results) {
+          if (r.status === "fail" && r.current) {
+            current.skills[r.name].computedHash = r.current;
+          }
+        }
+        await fs6.writeFile(
+          lockPath,
+          JSON.stringify(current, null, "	"),
+          "utf-8"
+        );
+        console.log(
+          chalk19.yellow(
+            "\n\u26A0 Updated skills-lock.json with current checksums."
+          )
+        );
+        console.log(
+          chalk19.gray(
+            "  Review changes carefully \u2014 only accept expected updates.\n"
+          )
+        );
+      } else {
+        console.log(
+          chalk19.red(
+            "\n\u2716 Some skills failed verification. Review changes before proceeding."
+          )
+        );
+        console.log(
+          chalk19.gray(
+            "  Run `vem skills verify --fix` to update checksums after manual review.\n"
+          )
+        );
+        process.exitCode = 1;
+      }
     }
   });
 }
@@ -8114,7 +9375,7 @@ async function pushSkillsToCloud(commitMessage) {
     const projectId = await configService.getProjectId();
     if (!projectId) {
       console.error(
-        chalk18.red(
+        chalk19.red(
           "Error: No project linked. Run `vem link <projectId>` first."
         )
       );
@@ -8125,7 +9386,7 @@ async function pushSkillsToCloud(commitMessage) {
     const lock = await readSkillsLock(repoRoot);
     if (!lock || Object.keys(lock.skills ?? {}).length === 0) {
       console.log(
-        chalk18.yellow(
+        chalk19.yellow(
           "No skills found in skills-lock.json. Install some with `vem skills add <source>`."
         )
       );
@@ -8133,7 +9394,7 @@ async function pushSkillsToCloud(commitMessage) {
     }
     const skillFiles = await collectSkillFiles(repoRoot, lock);
     console.log(
-      chalk18.blue(
+      chalk19.blue(
         `\u2B06  Pushing ${Object.keys(lock.skills).length} skill(s) (${skillFiles.length} file(s))...`
       )
     );
@@ -8158,7 +9419,7 @@ async function pushSkillsToCloud(commitMessage) {
     }
     const data = await res.json();
     console.log(
-      chalk18.green(
+      chalk19.green(
         `
 \u2714 Skills pushed (v${data.version_number}, ${data.skill_count} skill(s)).
 `
@@ -8166,7 +9427,7 @@ async function pushSkillsToCloud(commitMessage) {
     );
   } catch (error) {
     console.error(
-      chalk18.red("\n\u2716 Skills push failed:"),
+      chalk19.red("\n\u2716 Skills push failed:"),
       error instanceof Error ? error.message : String(error)
     );
     process.exitCode = 1;
@@ -8177,8 +9438,8 @@ async function pushSkillsToCloud(commitMessage) {
 import { execSync as execSync5 } from "child_process";
 import { readFile as readFile7 } from "fs/promises";
 import { join as join8 } from "path";
-import chalk19 from "chalk";
-import Table4 from "cli-table3";
+import chalk20 from "chalk";
+import Table5 from "cli-table3";
 function registerSyncCommands(program2) {
   program2.command("push").description("Push local snapshot to cloud").option(
     "--dry-run",
@@ -8190,7 +9451,7 @@ function registerSyncCommands(program2) {
       const projectId = await configService.getProjectId();
       if (!projectId) {
         console.error(
-          chalk19.red(
+          chalk20.red(
             "Error: Project not linked. Run `vem link <projectId>` before pushing snapshots."
           )
         );
@@ -8203,7 +9464,7 @@ function registerSyncCommands(program2) {
       const gitHash = getGitHash();
       if (!gitHash) {
         console.error(
-          chalk19.red(
+          chalk20.red(
             "Error: git HEAD not found. Create at least one commit before running `vem push`."
           )
         );
@@ -8215,25 +9476,25 @@ function registerSyncCommands(program2) {
       if (!hasChanges && !options.force) {
         const lastPushTime = lastPush.gitHash ? "previously" : "never";
         console.log(
-          chalk19.gray(
+          chalk20.gray(
             `\u2714 No changes since last push (git HEAD and .vem unchanged). Last push: ${lastPushTime}`
           )
         );
-        console.log(chalk19.gray("   Use --force to push anyway."));
+        console.log(chalk20.gray("   Use --force to push anyway."));
         return;
       }
-      console.log(chalk19.blue("\u{1F4E6} Packing snapshot..."));
+      console.log(chalk20.blue("\u{1F4E6} Packing snapshot..."));
       const snapshot = await syncService.pack();
       const snapshotHash = computeSnapshotHash(snapshot);
       const targetLabel = `linked project ${projectId}`;
       if (options.dryRun) {
-        console.log(chalk19.cyan("\n\u{1F4CB} Dry Run Preview\n"));
-        console.log(chalk19.white(`Target: ${targetLabel}`));
-        console.log(chalk19.white(`Git Hash: ${gitHash}`));
-        console.log(chalk19.white(`Snapshot Hash: ${snapshotHash}`));
-        console.log(chalk19.white(`Base Version: ${baseVersion || "none"}`));
+        console.log(chalk20.cyan("\n\u{1F4CB} Dry Run Preview\n"));
+        console.log(chalk20.white(`Target: ${targetLabel}`));
+        console.log(chalk20.white(`Git Hash: ${gitHash}`));
+        console.log(chalk20.white(`Snapshot Hash: ${snapshotHash}`));
+        console.log(chalk20.white(`Base Version: ${baseVersion || "none"}`));
         console.log(
-          chalk19.white(
+          chalk20.white(
             "Verification: pending until Git webhook matches git hash + snapshot hash"
           )
         );
@@ -8241,29 +9502,29 @@ function registerSyncCommands(program2) {
         const decisionCount = snapshot.decisions?.length || 0;
         const changelogCount = snapshot.changelog?.length || 0;
         const agentInstructionCount = snapshot.agent_instructions?.length || 0;
-        console.log(chalk19.white(`
+        console.log(chalk20.white(`
 Snapshot Contents:`));
-        console.log(chalk19.gray(`  Tasks: ${taskCount}`));
-        console.log(chalk19.gray(`  Decisions (chars): ${decisionCount}`));
-        console.log(chalk19.gray(`  Changelog (chars): ${changelogCount}`));
+        console.log(chalk20.gray(`  Tasks: ${taskCount}`));
+        console.log(chalk20.gray(`  Decisions (chars): ${decisionCount}`));
+        console.log(chalk20.gray(`  Changelog (chars): ${changelogCount}`));
         console.log(
-          chalk19.gray(`  Context: ${snapshot.context ? "yes" : "no"}`)
+          chalk20.gray(`  Context: ${snapshot.context ? "yes" : "no"}`)
         );
         console.log(
-          chalk19.gray(
+          chalk20.gray(
             `  Current state: ${snapshot.current_state ? "yes" : "no"}`
           )
         );
         console.log(
-          chalk19.gray(
+          chalk20.gray(
             `  Agent instructions: ${agentInstructionCount} file${agentInstructionCount === 1 ? "" : "s"}`
           )
         );
-        console.log(chalk19.cyan("\n\u2714 Dry run complete. No changes pushed.\n"));
-        console.log(chalk19.gray("   Run without --dry-run to push for real."));
+        console.log(chalk20.cyan("\n\u2714 Dry run complete. No changes pushed.\n"));
+        console.log(chalk20.gray("   Run without --dry-run to push for real."));
         return;
       }
-      console.log(chalk19.blue(`\u{1F680} Pushing to cloud (${targetLabel})...`));
+      console.log(chalk20.blue(`\u{1F680} Pushing to cloud (${targetLabel})...`));
       const commits = await getCommits(50);
       const payload = {
         ...snapshot,
@@ -8279,12 +9540,12 @@ Snapshot Contents:`));
         const expectedRepoUrl = result.data.expected_repo_url;
         const actualRepo = repoUrl || "(no git remote)";
         console.log(
-          chalk19.yellow(
+          chalk20.yellow(
             `Project is linked to ${expectedRepoUrl}. Local repo is ${actualRepo}. Retrying using the linked project only...`
           )
         );
         console.log(
-          chalk19.blue(
+          chalk20.blue(
             `\u{1F680} Pushing to cloud (linked repo ${expectedRepoUrl})...`
           )
         );
@@ -8298,7 +9559,7 @@ Snapshot Contents:`));
           await configService.setLastSyncedVemHash(vemHash);
         }
         console.log(
-          chalk19.green(
+          chalk20.green(
             `
 \u2714 Snapshot pushed! Version: ${result.data.version || "v1"}
 `
@@ -8310,12 +9571,12 @@ Snapshot Contents:`));
           });
           if (archivedCount > 0) {
             console.log(
-              chalk19.green(`\u2714 Archived ${archivedCount} completed tasks.`)
+              chalk20.green(`\u2714 Archived ${archivedCount} completed tasks.`)
             );
           }
         } catch (err) {
           console.error(
-            chalk19.yellow(
+            chalk20.yellow(
               `\u26A0 Failed to archive completed tasks: ${err instanceof Error ? err.message : String(err)}`
             )
           );
@@ -8373,13 +9634,36 @@ Snapshot Contents:`));
             );
             if (skillsRes.ok) {
               console.log(
-                chalk19.green(
+                chalk20.green(
                   `\u2714 Skills synced (${skillCount} skill${skillCount === 1 ? "" : "s"}).`
                 )
               );
             }
           } catch {
           }
+        }
+        try {
+          const [constitutionContent, validationRules, sensorsConfig] = await Promise.all([
+            new ConstitutionService().get(),
+            new ValidationRulesService().readRules(),
+            new SensorsService().readConfig()
+          ]);
+          const apiKey = await configService.getApiKey();
+          const deviceHeaders = await buildDeviceHeaders(configService);
+          await fetch(`${API_URL}/projects/${projectId}/vem-config`, {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+              ...deviceHeaders
+            },
+            body: JSON.stringify({
+              constitution_content: constitutionContent,
+              validation_rules: validationRules,
+              sensors_config: sensorsConfig
+            })
+          });
+        } catch {
         }
         await showWorkflowHint("push");
       } else {
@@ -8388,7 +9672,7 @@ Snapshot Contents:`));
           if (data.latest_version) {
             const latest = data.latest_version || "unknown";
             console.error(
-              chalk19.yellow(
+              chalk20.yellow(
                 `Conflict: local base version ${baseVersion || "none"} does not match latest ${latest}. Pull the latest snapshot (\`vem pull\`) or re-run push from the latest memory state.`
               )
             );
@@ -8398,18 +9682,18 @@ Snapshot Contents:`));
             const expectedRepoUrl = data.expected_repo_url;
             const actualRepo = repoUrl || "(no git remote)";
             console.error(
-              chalk19.yellow(
+              chalk20.yellow(
                 `Project is linked to ${expectedRepoUrl}, local repo is ${actualRepo}. Update your git remote or re-link the project, then retry.`
               )
             );
             return;
           }
-          console.error(chalk19.yellow(data.error || "Conflict detected."));
+          console.error(chalk20.yellow(data.error || "Conflict detected."));
           return;
         }
         if (result.status === 403) {
           console.error(
-            chalk19.red(
+            chalk20.red(
               result.error || "Device limit reached. Disconnect a device or upgrade your plan."
             )
           );
@@ -8417,26 +9701,26 @@ Snapshot Contents:`));
         }
         if (result.status === 404) {
           console.error(
-            chalk19.red(
+            chalk20.red(
               result.error || "Project not found. It may have been deleted. Run `vem unlink` then `vem link` to reconnect."
             )
           );
           return;
         }
         console.log(
-          chalk19.yellow(
+          chalk20.yellow(
             `
 \u26A0 Push failed (${result.error}). Queuing snapshot for later...`
           )
         );
         const id = await syncService.enqueue(payload);
-        console.log(chalk19.gray(`Queued as ${id}`));
+        console.log(chalk20.gray(`Queued as ${id}`));
       }
     } catch (error) {
       if (error instanceof Error) {
-        console.error(chalk19.red("\n\u2716 Push Failed:"), error.message);
+        console.error(chalk20.red("\n\u2716 Push Failed:"), error.message);
       } else {
-        console.error(chalk19.red("\n\u2716 Push Failed:"), String(error));
+        console.error(chalk20.red("\n\u2716 Push Failed:"), String(error));
       }
     }
   });
@@ -8447,12 +9731,12 @@ Snapshot Contents:`));
       const projectId = await configService.getProjectId();
       if (await isVemDirty(configService) && !options.force) {
         console.error(
-          chalk19.yellow(
+          chalk20.yellow(
             "\u26A0 Local .vem memory has unsynced changes. Pulling will overwrite it."
           )
         );
         console.log(
-          chalk19.gray(
+          chalk20.gray(
             "Push your snapshot first, or use `vem pull --force` to proceed."
           )
         );
@@ -8461,7 +9745,7 @@ Snapshot Contents:`));
       const repoUrl = projectId ? null : await getGitRemote();
       if (!repoUrl && !projectId) {
         console.error(
-          chalk19.red(
+          chalk20.red(
             "Error: Could not detect git remote URL or linked project. Run `vem link <projectId>` or set a git remote."
           )
         );
@@ -8469,7 +9753,7 @@ Snapshot Contents:`));
       }
       const targetLabel = repoUrl || projectId || "project";
       console.log(
-        chalk19.blue(`\u2B07 Finding latest snapshot for ${targetLabel}...`)
+        chalk20.blue(`\u2B07 Finding latest snapshot for ${targetLabel}...`)
       );
       const query = new URLSearchParams();
       if (repoUrl) query.set("repo_url", repoUrl);
@@ -8484,10 +9768,10 @@ Snapshot Contents:`));
         const data2 = await res.json().catch(() => ({}));
         if (res.status === 404) {
           const message = typeof data2.error === "string" ? data2.error : "Project not found. It may have been deleted. Run `vem unlink` then `vem link` to reconnect.";
-          console.log(chalk19.yellow(message));
+          console.log(chalk20.yellow(message));
           if (message.toLowerCase().includes("no snapshots")) {
             console.log(
-              chalk19.gray(
+              chalk20.gray(
                 "Tip: push a snapshot first (`vem push`) and wait for verification if needed."
               )
             );
@@ -8497,18 +9781,18 @@ Snapshot Contents:`));
         if (res.status === 409) {
           if (data2.expected_repo_url) {
             console.error(
-              chalk19.yellow(
+              chalk20.yellow(
                 `Repo URL mismatch. Expected ${data2.expected_repo_url}. Update your git remote or project settings, then retry.`
               )
             );
             return;
           }
-          console.error(chalk19.yellow(data2.error || "Conflict detected."));
+          console.error(chalk20.yellow(data2.error || "Conflict detected."));
           return;
         }
         if (res.status === 403) {
           console.error(
-            chalk19.red(
+            chalk20.red(
               data2.error || "Device limit reached. Disconnect a device or upgrade your plan."
             )
           );
@@ -8520,10 +9804,10 @@ Snapshot Contents:`));
       }
       const data = await res.json();
       if (!data.snapshot) {
-        console.log(chalk19.yellow("No snapshot data in response."));
+        console.log(chalk20.yellow("No snapshot data in response."));
         return;
       }
-      console.log(chalk19.blue("\u{1F4E6} Unpacking snapshot..."));
+      console.log(chalk20.blue("\u{1F4E6} Unpacking snapshot..."));
       await syncService.unpack(data.snapshot);
       const localHash = await computeVemHash();
       await configService.setLastSyncedVemHash(localHash);
@@ -8531,15 +9815,15 @@ Snapshot Contents:`));
         await configService.setLastVersion(data.version);
       }
       console.log(
-        chalk19.green(`
+        chalk20.green(`
 \u2714 Synced to version ${data.version || "unknown"}
 `)
       );
     } catch (error) {
       if (error instanceof Error) {
-        console.error(chalk19.red("\n\u2716 Pull Failed:"), error.message);
+        console.error(chalk20.red("\n\u2716 Pull Failed:"), error.message);
       } else {
-        console.error(chalk19.red("\n\u2716 Pull Failed:"), String(error));
+        console.error(chalk20.red("\n\u2716 Pull Failed:"), String(error));
       }
     }
   });
@@ -8553,9 +9837,9 @@ Snapshot Contents:`));
       await showWorkflowHint("pack");
     } catch (error) {
       if (error instanceof Error) {
-        console.error(chalk19.red("\n\u2716 Pack Failed:"), error.message);
+        console.error(chalk20.red("\n\u2716 Pack Failed:"), error.message);
       } else {
-        console.error(chalk19.red("\n\u2716 Pack Failed:"), String(error));
+        console.error(chalk20.red("\n\u2716 Pack Failed:"), String(error));
       }
     }
   });
@@ -8569,7 +9853,7 @@ Snapshot Contents:`));
         input = await readStdin();
       } else {
         console.error(
-          chalk19.red(
+          chalk20.red(
             "Provide a vem_update block via --file or pipe it into stdin."
           )
         );
@@ -8603,58 +9887,58 @@ Snapshot Contents:`));
         if (!res.ok) {
           const errText = await res.text().catch(() => "");
           console.error(
-            chalk19.red("[vem finalize] API submission failed:"),
+            chalk20.red("[vem finalize] API submission failed:"),
             res.status,
             errText
           );
           process.exitCode = 1;
         } else {
-          console.log(chalk19.green("\n\u2714 vem update submitted to API\n"));
+          console.log(chalk20.green("\n\u2714 vem update submitted to API\n"));
         }
         return;
       }
       const result = await applyVemUpdate(update);
-      console.log(chalk19.green("\n\u2714 vem update applied\n"));
+      console.log(chalk20.green("\n\u2714 vem update applied\n"));
       if (result.updatedTasks.length > 0) {
         console.log(
-          chalk19.gray(
+          chalk20.gray(
             `Updated tasks: ${result.updatedTasks.map((task) => task.id).join(", ")}`
           )
         );
       }
       if (result.newTasks.length > 0) {
         console.log(
-          chalk19.gray(
+          chalk20.gray(
             `New tasks: ${result.newTasks.map((task) => task.id).join(", ")}`
           )
         );
       }
       if (result.changelogLines.length > 0) {
         console.log(
-          chalk19.gray(`Changelog entries: ${result.changelogLines.length}`)
+          chalk20.gray(`Changelog entries: ${result.changelogLines.length}`)
         );
       }
       if (result.newCycles.length > 0) {
         console.log(
-          chalk19.gray(
+          chalk20.gray(
             `New cycles: ${result.newCycles.map((c) => c.name).join(", ")}`
           )
         );
       }
       if (result.decisionsAppended) {
-        console.log(chalk19.gray("Decisions updated."));
+        console.log(chalk20.gray("Decisions updated."));
       }
       if (result.currentStateUpdated) {
-        console.log(chalk19.gray("Current state updated."));
+        console.log(chalk20.gray("Current state updated."));
       } else {
         console.log(
-          chalk19.yellow(
+          chalk20.yellow(
             "No current_state provided; CURRENT_STATE.md was left unchanged."
           )
         );
       }
       if (result.contextUpdated) {
-        console.log(chalk19.gray("Context updated."));
+        console.log(chalk20.gray("Context updated."));
       }
       const configService = new ConfigService();
       await syncParsedTaskUpdatesToRemote(
@@ -8663,19 +9947,19 @@ Snapshot Contents:`));
         result
       ).catch((err) => {
         console.error(
-          chalk19.yellow("[vem finalize] syncParsed failed:"),
+          chalk20.yellow("[vem finalize] syncParsed failed:"),
           err instanceof Error ? err.message : String(err)
         );
       });
       const synced = await syncProjectMemoryToRemote().catch(() => false);
       if (synced) {
-        console.log(chalk19.gray("\u2714 Synced to cloud."));
+        console.log(chalk20.gray("\u2714 Synced to cloud."));
       }
     } catch (error) {
       if (error instanceof Error) {
-        console.error(chalk19.red("\n\u2716 Finalize Failed:"), error.message);
+        console.error(chalk20.red("\n\u2716 Finalize Failed:"), error.message);
       } else {
-        console.error(chalk19.red("\n\u2716 Finalize Failed:"), String(error));
+        console.error(chalk20.red("\n\u2716 Finalize Failed:"), String(error));
       }
       process.exitCode = 1;
     }
@@ -8696,7 +9980,7 @@ Snapshot Contents:`));
         input = await readStdin();
       } else {
         console.error(
-          chalk19.red(
+          chalk20.red(
             "Provide a vem_review JSON block via --file or pipe it into stdin."
           )
         );
@@ -8711,7 +9995,7 @@ Snapshot Contents:`));
         parsedJson = JSON.parse(rawJson.trim());
       } catch {
         console.error(
-          chalk19.red("\n\u2716 Review Submit Failed: input is not valid JSON\n")
+          chalk20.red("\n\u2716 Review Submit Failed: input is not valid JSON\n")
         );
         process.exitCode = 1;
         return;
@@ -8719,7 +10003,7 @@ Snapshot Contents:`));
       const result = VemReviewSchema.safeParse(parsedJson);
       if (!result.success) {
         console.error(
-          chalk19.red("\n\u2716 Review Submit Failed: invalid vem_review payload"),
+          chalk20.red("\n\u2716 Review Submit Failed: invalid vem_review payload"),
           result.error.flatten()
         );
         process.exitCode = 1;
@@ -8730,7 +10014,7 @@ Snapshot Contents:`));
       const sandboxApiUrl = "https://api.vem.dev";
       if (!sandboxRunId || !sandboxApiKey) {
         console.error(
-          chalk19.red(
+          chalk20.red(
             "\n\u2716 Review Submit Failed: VEM_TASK_RUN_ID and VEM_API_KEY must be set.\n  This command is intended for use inside a cloud sandbox container.\n"
           )
         );
@@ -8759,19 +10043,19 @@ Snapshot Contents:`));
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
         console.error(
-          chalk19.red("[vem review submit] API submission failed:"),
+          chalk20.red("[vem review submit] API submission failed:"),
           res.status,
           errText
         );
         process.exitCode = 1;
       } else {
-        console.log(chalk19.green("\n\u2714 vem review submitted to API\n"));
+        console.log(chalk20.green("\n\u2714 vem review submitted to API\n"));
       }
     } catch (error) {
       if (error instanceof Error) {
-        console.error(chalk19.red("\n\u2716 Review Submit Failed:"), error.message);
+        console.error(chalk20.red("\n\u2716 Review Submit Failed:"), error.message);
       } else {
-        console.error(chalk19.red("\n\u2716 Review Submit Failed:"), String(error));
+        console.error(chalk20.red("\n\u2716 Review Submit Failed:"), String(error));
       }
       process.exitCode = 1;
     }
@@ -8784,7 +10068,7 @@ Snapshot Contents:`));
         for (const item of queue2) {
           await syncService.removeFromQueue(item.id);
         }
-        console.log(chalk19.green("\n\u2714 Queue cleared\n"));
+        console.log(chalk20.green("\n\u2714 Queue cleared\n"));
         return;
       }
       if (options.retry) {
@@ -8794,20 +10078,20 @@ Snapshot Contents:`));
       }
       const queue = await syncService.getQueue();
       if (queue.length === 0) {
-        console.log(chalk19.gray("\nOffline queue is empty.\n"));
+        console.log(chalk20.gray("\nOffline queue is empty.\n"));
         return;
       }
-      console.log(chalk19.bold(`
+      console.log(chalk20.bold(`
 \u{1F4E6} Offline Queue (${queue.length} items)
 `));
-      const table = new Table4({
+      const table = new Table5({
         head: ["ID", "Time", "Repo", "Version"],
         style: { head: ["cyan"] }
       });
       queue.forEach((item) => {
         const date = new Date(parseInt(item.id.split("-")[0], 10));
         table.push([
-          chalk19.gray(item.id),
+          chalk20.gray(item.id),
           date.toLocaleString(),
           item.payload.repo_url || "unknown",
           item.payload.base_version || "none"
@@ -8815,10 +10099,10 @@ Snapshot Contents:`));
       });
       console.log(table.toString());
       console.log(
-        chalk19.gray("\nUse `vem queue --retry` to push these snapshots.\n")
+        chalk20.gray("\nUse `vem queue --retry` to push these snapshots.\n")
       );
     } catch (error) {
-      console.error(chalk19.red("Queue Error:"), error.message);
+      console.error(chalk20.red("Queue Error:"), error.message);
     }
   });
   program2.command("archive").description("Archive old memory files to keep context small").option("--all", "Archive decisions, changelogs, and tasks").option("--decisions", "Archive decisions only").option("--changelog", "Archive changelog only").option("--tasks", "Archive completed tasks only").option(
@@ -8836,22 +10120,22 @@ Snapshot Contents:`));
       const keepCount = options.keep ?? 20;
       const olderThanDays = options.olderThan ?? 30;
       const all = options.all || !options.decisions && !options.changelog && !options.tasks;
-      console.log(chalk19.bold("\n\u{1F5C4}\uFE0F  Archiving Memory...\n"));
+      console.log(chalk20.bold("\n\u{1F5C4}\uFE0F  Archiving Memory...\n"));
       console.log(
-        chalk19.gray(
+        chalk20.gray(
           `Criteria: Keep ${keepCount} items OR younger than ${olderThanDays} days.`
         )
       );
       if (all || options.decisions) {
-        const decisionsLog = new ScalableLogService(DECISIONS_DIR);
-        const count = await decisionsLog.archiveEntries({
+        const decisionsLog2 = new ScalableLogService(DECISIONS_DIR);
+        const count = await decisionsLog2.archiveEntries({
           keepCount,
           olderThanDays
         });
         if (count > 0) {
-          console.log(chalk19.green(`\u2714 Archived ${count} decision(s)`));
+          console.log(chalk20.green(`\u2714 Archived ${count} decision(s)`));
         } else {
-          console.log(chalk19.gray("Decisions: Nothing to archive"));
+          console.log(chalk20.gray("Decisions: Nothing to archive"));
         }
       }
       if (all || options.changelog) {
@@ -8861,9 +10145,9 @@ Snapshot Contents:`));
           olderThanDays
         });
         if (count > 0) {
-          console.log(chalk19.green(`\u2714 Archived ${count} changelog entry(s)`));
+          console.log(chalk20.green(`\u2714 Archived ${count} changelog entry(s)`));
         } else {
-          console.log(chalk19.gray("Changelog: Nothing to archive"));
+          console.log(chalk20.gray("Changelog: Nothing to archive"));
         }
       }
       if (all || options.tasks) {
@@ -8872,17 +10156,17 @@ Snapshot Contents:`));
           olderThanDays
         });
         if (count > 0) {
-          console.log(chalk19.green(`\u2714 Archived ${count} completed task(s)`));
+          console.log(chalk20.green(`\u2714 Archived ${count} completed task(s)`));
         } else {
-          console.log(chalk19.gray("Tasks: Nothing to archive"));
+          console.log(chalk20.gray("Tasks: Nothing to archive"));
         }
       }
       console.log("");
     } catch (error) {
       if (error instanceof Error) {
-        console.error(chalk19.red("\n\u2716 Archive Failed:"), error.message);
+        console.error(chalk20.red("\n\u2716 Archive Failed:"), error.message);
       } else {
-        console.error(chalk19.red("\n\u2716 Archive Failed:"), String(error));
+        console.error(chalk20.red("\n\u2716 Archive Failed:"), String(error));
       }
       process.exit(1);
     }
@@ -8890,29 +10174,29 @@ Snapshot Contents:`));
 }
 
 // src/commands/task.ts
-import chalk20 from "chalk";
-import Table5 from "cli-table3";
+import chalk21 from "chalk";
+import Table6 from "cli-table3";
 import prompts10 from "prompts";
 function registerTaskCommands(program2) {
   const taskCmd = program2.command("task").description("Manage tasks");
   const formatTaskStatusLabel = (status, deletedAt) => {
-    if (deletedAt) return chalk20.red("DELETED");
+    if (deletedAt) return chalk21.red("DELETED");
     switch (status) {
       case "ready":
-        return chalk20.cyan("READY");
+        return chalk21.cyan("READY");
       case "in-review":
-        return chalk20.magenta("IN REVW");
+        return chalk21.magenta("IN REVW");
       case "in-progress":
-        return chalk20.blue("IN PROG");
+        return chalk21.blue("IN PROG");
       case "blocked":
-        return chalk20.yellow("BLOCKED");
+        return chalk21.yellow("BLOCKED");
       case "done":
-        return chalk20.green("DONE");
+        return chalk21.green("DONE");
       default:
-        return chalk20.gray("TODO");
+        return chalk21.gray("TODO");
     }
   };
-  const formatTaskPriority = (priority) => priority === "high" || priority === "critical" ? chalk20.red(priority) : chalk20.white(priority || "");
+  const formatTaskPriority = (priority) => priority === "high" || priority === "critical" ? chalk21.red(priority) : chalk21.white(priority || "");
   const ADD_TASK_BACK_VALUE = "__vem_back__";
   const ADD_TASK_PRIORITIES = ["low", "medium", "high", "critical"];
   const TASK_STATUS_VALUES = /* @__PURE__ */ new Set([
@@ -9001,7 +10285,8 @@ function registerTaskCommands(program2) {
       due_at: asIsoLikeString(record.due_at),
       github_issue_number: asFiniteNumber(record.github_issue_number),
       deleted_at: asIsoLikeString(record.deleted_at),
-      validation_steps: asStringArray(record.validation_steps)
+      validation_steps: asStringArray(record.validation_steps),
+      acceptance_criteria: asStringArray(record.acceptance_criteria)
     };
   };
   const getRemoteTasks = async (options) => {
@@ -9157,6 +10442,9 @@ function registerTaskCommands(program2) {
       if (patch.due_at !== void 0) payload.due_at = patch.due_at;
       if (patch.validation_steps !== void 0) {
         payload.validation_steps = patch.validation_steps;
+      }
+      if (patch.acceptance_criteria !== void 0) {
+        payload.acceptance_criteria = patch.acceptance_criteria;
       }
       if (patch.deleted_at !== void 0) payload.deleted_at = patch.deleted_at;
       if (patch.sessions !== void 0) payload.sessions = patch.sessions;
@@ -9385,7 +10673,7 @@ function registerTaskCommands(program2) {
     ]);
     if (status && !validStatuses.has(status)) {
       console.error(
-        chalk20.red(
+        chalk21.red(
           `Invalid status "${status}". Use: todo, ready, in-review, in-progress, blocked, done.`
         )
       );
@@ -9398,34 +10686,34 @@ function registerTaskCommands(program2) {
     }
     const showFlow = !!options.flow;
     const headCols = showFlow ? ["ID", "Status", "Title", "Cycle", "Score", "Assignee", "Priority"] : ["ID", "Status", "Title", "Assignee", "Priority"];
-    const table = new Table5({
+    const table = new Table6({
       head: headCols,
       style: { head: ["cyan"] }
     });
     const _fmtMs = (ms) => {
-      if (!ms) return chalk20.gray("-");
+      if (!ms) return chalk21.gray("-");
       const days = Math.floor(ms / 864e5);
       const hrs = Math.floor(ms % 864e5 / 36e5);
-      return days > 0 ? chalk20.white(`${days}d ${hrs}h`) : chalk20.white(`${hrs}h`);
+      return days > 0 ? chalk21.white(`${days}d ${hrs}h`) : chalk21.white(`${hrs}h`);
     };
     filtered.forEach((t) => {
       if (showFlow) {
         const _cycleTime = t.started_at && t.status === "done" ? Date.now() - new Date(t.started_at).getTime() : void 0;
         table.push([
-          chalk20.white(t.id),
+          chalk21.white(t.id),
           formatTaskStatusLabel(t.status, t.deleted_at),
           t.title,
-          t.cycle_id ? chalk20.cyan(t.cycle_id) : chalk20.gray("-"),
-          t.impact_score !== void 0 ? chalk20.yellow(String(Math.round(t.impact_score))) : chalk20.gray("-"),
-          chalk20.gray(t.assignee || "-"),
+          t.cycle_id ? chalk21.cyan(t.cycle_id) : chalk21.gray("-"),
+          t.impact_score !== void 0 ? chalk21.yellow(String(Math.round(t.impact_score))) : chalk21.gray("-"),
+          chalk21.gray(t.assignee || "-"),
           formatTaskPriority(t.priority)
         ]);
       } else {
         table.push([
-          chalk20.white(t.id),
+          chalk21.white(t.id),
           formatTaskStatusLabel(t.status, t.deleted_at),
           t.title,
-          chalk20.gray(t.assignee || "-"),
+          chalk21.gray(t.assignee || "-"),
           formatTaskPriority(t.priority)
         ]);
       }
@@ -9436,7 +10724,7 @@ function registerTaskCommands(program2) {
     const parentId = options.parent;
     const parent = await taskService.getTask(parentId);
     if (!parent) {
-      console.error(chalk20.red(`
+      console.error(chalk21.red(`
 \u2716 Task ${parentId} not found.
 `));
       process.exitCode = 1;
@@ -9449,38 +10737,38 @@ function registerTaskCommands(program2) {
       if (orderA !== orderB) return orderA - orderB;
       return a.id.localeCompare(b.id);
     });
-    const parentTable = new Table5({
+    const parentTable = new Table6({
       head: ["ID", "Status", "Title", "Assignee", "Priority"],
       style: { head: ["cyan"] }
     });
     parentTable.push([
-      chalk20.white(parent.id),
+      chalk21.white(parent.id),
       formatTaskStatusLabel(parent.status),
       parent.title,
-      chalk20.gray(parent.assignee || "-"),
+      chalk21.gray(parent.assignee || "-"),
       formatTaskPriority(parent.priority)
     ]);
-    console.log(chalk20.bold("\nParent Task"));
+    console.log(chalk21.bold("\nParent Task"));
     console.log(parentTable.toString());
     if (subtasks.length === 0) {
-      console.log(chalk20.gray("\nNo subtasks found."));
+      console.log(chalk21.gray("\nNo subtasks found."));
       return;
     }
-    const subtaskTable = new Table5({
+    const subtaskTable = new Table6({
       head: ["ID", "Status", "Title", "Assignee", "Priority", "Order"],
       style: { head: ["cyan"] }
     });
     subtasks.forEach((t) => {
       subtaskTable.push([
-        chalk20.white(t.id),
+        chalk21.white(t.id),
         formatTaskStatusLabel(t.status),
         t.title,
-        chalk20.gray(t.assignee || "-"),
+        chalk21.gray(t.assignee || "-"),
         formatTaskPriority(t.priority),
         typeof t.subtask_order === "number" ? `#${t.subtask_order}` : "-"
       ]);
     });
-    console.log(chalk20.bold("\nSubtasks"));
+    console.log(chalk21.bold("\nSubtasks"));
     console.log(subtaskTable.toString());
   });
   taskCmd.command("details").description("Show task details").requiredOption("--id <id>", "Task ID").action(async (options) => {
@@ -9493,77 +10781,77 @@ function registerTaskCommands(program2) {
       const localTask = await taskService.getTask(options.id);
       const task = remoteTask ?? localTask;
       if (!task) {
-        console.error(chalk20.red(`
+        console.error(chalk21.red(`
 \u2716 Task ${options.id} not found.
 `));
         process.exitCode = 1;
         return;
       }
-      console.log(chalk20.bold(`
+      console.log(chalk21.bold(`
 \u{1F4CB} Task Details: ${task.id}
 `));
-      console.log(`${chalk20.cyan("Title:")}       ${task.title}`);
+      console.log(`${chalk21.cyan("Title:")}       ${task.title}`);
       console.log(
-        `${chalk20.cyan("Status:")}      ${task.status.toUpperCase()}`
+        `${chalk21.cyan("Status:")}      ${task.status.toUpperCase()}`
       );
       console.log(
-        `${chalk20.cyan("Priority:")}    ${(task.priority || "medium").toUpperCase()}`
+        `${chalk21.cyan("Priority:")}    ${(task.priority || "medium").toUpperCase()}`
       );
       if (task.assignee) {
-        console.log(`${chalk20.cyan("Assignee:")}    ${task.assignee}`);
+        console.log(`${chalk21.cyan("Assignee:")}    ${task.assignee}`);
       }
       if (task.github_issue_number) {
         console.log(
-          `${chalk20.cyan("GitHub Issue:")} #${task.github_issue_number}`
+          `${chalk21.cyan("GitHub Issue:")} #${task.github_issue_number}`
         );
       }
       if (task.tags && task.tags.length > 0) {
-        console.log(`${chalk20.cyan("Tags:")}        ${task.tags.join(", ")}`);
+        console.log(`${chalk21.cyan("Tags:")}        ${task.tags.join(", ")}`);
       }
       if (task.type) {
-        console.log(`${chalk20.cyan("Type:")}        ${task.type}`);
+        console.log(`${chalk21.cyan("Type:")}        ${task.type}`);
       }
       if (typeof task.estimate_hours === "number") {
-        console.log(`${chalk20.cyan("Estimate:")}    ${task.estimate_hours}h`);
+        console.log(`${chalk21.cyan("Estimate:")}    ${task.estimate_hours}h`);
       }
       if (task.depends_on && task.depends_on.length > 0) {
         console.log(
-          `${chalk20.cyan("Depends On:")} ${task.depends_on.join(", ")}`
+          `${chalk21.cyan("Depends On:")} ${task.depends_on.join(", ")}`
         );
       }
       if (task.blocked_by && task.blocked_by.length > 0) {
         console.log(
-          `${chalk20.cyan("Blocked By:")} ${task.blocked_by.join(", ")}`
+          `${chalk21.cyan("Blocked By:")} ${task.blocked_by.join(", ")}`
         );
       }
       if (task.recurrence_rule) {
-        console.log(`${chalk20.cyan("Recurrence:")}  ${task.recurrence_rule}`);
+        console.log(`${chalk21.cyan("Recurrence:")}  ${task.recurrence_rule}`);
       }
       if (task.owner_id) {
-        console.log(`${chalk20.cyan("Owner:")}       ${task.owner_id}`);
+        console.log(`${chalk21.cyan("Owner:")}       ${task.owner_id}`);
       }
       if (task.reviewer_id) {
-        console.log(`${chalk20.cyan("Reviewer:")}    ${task.reviewer_id}`);
+        console.log(`${chalk21.cyan("Reviewer:")}    ${task.reviewer_id}`);
       }
       if (task.deleted_at) {
-        console.log(`${chalk20.cyan("Deleted At:")}  ${task.deleted_at}`);
+        console.log(`${chalk21.cyan("Deleted At:")}  ${task.deleted_at}`);
       }
       if (task.parent_id) {
-        console.log(`${chalk20.cyan("Parent Task:")} ${task.parent_id}`);
+        console.log(`${chalk21.cyan("Parent Task:")} ${task.parent_id}`);
       }
       if (typeof task.subtask_order === "number") {
-        console.log(`${chalk20.cyan("Subtask Order:")} #${task.subtask_order}`);
+        console.log(`${chalk21.cyan("Subtask Order:")} #${task.subtask_order}`);
       }
       if (task.due_at) {
-        console.log(`${chalk20.cyan("Due At:")}      ${task.due_at}`);
+        console.log(`${chalk21.cyan("Due At:")}      ${task.due_at}`);
       }
       const createdAt = task.created_at ?? localTask?.created_at ?? "N/A";
       const updatedAt = task.updated_at ?? localTask?.updated_at ?? "N/A";
-      console.log(`${chalk20.cyan("Created At:")}  ${createdAt}`);
-      console.log(`${chalk20.cyan("Updated At:")}  ${updatedAt}`);
+      console.log(`${chalk21.cyan("Created At:")}  ${createdAt}`);
+      console.log(`${chalk21.cyan("Updated At:")}  ${updatedAt}`);
       if (task.description) {
         console.log(`
-${chalk20.cyan("Description:")}
+${chalk21.cyan("Description:")}
 ${task.description}`);
       }
       const remoteContext = await getRemoteTaskContext(task.id);
@@ -9572,22 +10860,22 @@ ${task.description}`);
       const relatedDecisionSource = task.related_decisions && task.related_decisions.length > 0 ? task.related_decisions : localTask?.related_decisions ?? [];
       const relatedDecisions = relatedDecisionSource.map((entry) => entry.trim()).filter(Boolean);
       console.log(`
-${chalk20.cyan("Context:")}`);
+${chalk21.cyan("Context:")}`);
       if (effectiveTaskContextSummary) {
-        console.log(chalk20.gray("  Summary:"));
+        console.log(chalk21.gray("  Summary:"));
         console.log(`  ${effectiveTaskContextSummary}`);
       }
       if (effectiveTaskContext) {
-        console.log(chalk20.gray("  Full context:"));
+        console.log(chalk21.gray("  Full context:"));
         console.log(`  ${effectiveTaskContext}`);
       }
       if (!effectiveTaskContextSummary && !effectiveTaskContext) {
-        console.log(chalk20.gray("  No context recorded."));
+        console.log(chalk21.gray("  No context recorded."));
       }
       console.log(`
-${chalk20.cyan("Decisions:")}`);
+${chalk21.cyan("Decisions:")}`);
       if (relatedDecisions.length === 0) {
-        console.log(chalk20.gray("  No related decisions."));
+        console.log(chalk21.gray("  No related decisions."));
       } else {
         for (const decision of relatedDecisions) {
           console.log(`  - ${decision}`);
@@ -9595,25 +10883,25 @@ ${chalk20.cyan("Decisions:")}`);
       }
       if (task.evidence && task.evidence.length > 0) {
         console.log(`
-${chalk20.cyan("Evidence:")}`);
+${chalk21.cyan("Evidence:")}`);
         task.evidence.forEach((e) => {
           console.log(`  - ${e}`);
         });
       }
       if (task.actions && task.actions.length > 0) {
         console.log(`
-${chalk20.cyan("Actions:")}`);
+${chalk21.cyan("Actions:")}`);
         task.actions.forEach((a) => {
           const type = a.type.replace(/_/g, " ").toUpperCase();
           console.log(
-            `  ${chalk20.gray(`[${a.created_at}]`)} ${chalk20.bold(type)}${a.reasoning ? `: ${a.reasoning}` : ""}`
+            `  ${chalk21.gray(`[${a.created_at}]`)} ${chalk21.bold(type)}${a.reasoning ? `: ${a.reasoning}` : ""}`
           );
         });
       }
       console.log("");
     } catch (error) {
       console.error(
-        chalk20.red(`
+        chalk21.red(`
 \u2716 Failed to get task details: ${error.message}
 `)
       );
@@ -9629,7 +10917,7 @@ ${chalk20.cyan("Actions:")}`);
       const localTask = await taskService.getTask(id);
       const task = remoteTask ?? localTask;
       if (!task) {
-        console.error(chalk20.red(`Task ${id} not found.`));
+        console.error(chalk21.red(`Task ${id} not found.`));
         return;
       }
       const remoteContext = await getRemoteTaskContext(id);
@@ -9638,16 +10926,16 @@ ${chalk20.cyan("Actions:")}`);
         const currentContext = remoteContext?.task_context ?? task.task_context ?? "";
         if (currentContext.trim().length > 0) {
           console.log(`
-${chalk20.cyan("Task Context:")}
+${chalk21.cyan("Task Context:")}
 ${currentContext}`);
         } else {
-          console.log(chalk20.yellow("\nNo task context found.\n"));
+          console.log(chalk21.yellow("\nNo task context found.\n"));
         }
         const currentSummary = remoteContext?.task_context_summary ?? task.task_context_summary ?? "";
         if (currentSummary.trim().length > 0) {
           console.log(
             `
-${chalk20.cyan("Task Context Summary:")}
+${chalk21.cyan("Task Context Summary:")}
 ${currentSummary}
 `
           );
@@ -9669,7 +10957,7 @@ ${currentSummary}
         await taskService.updateTask(id, { task_context: nextContext });
       }
       console.log(
-        chalk20.green(
+        chalk21.green(
           `
 \u2714 Updated context for ${id}${remoteUpdated ? " (cloud + local cache)" : " (local cache)"}
 `
@@ -9677,7 +10965,7 @@ ${currentSummary}
       );
     } catch (error) {
       console.error(
-        chalk20.red(`Failed to update task context: ${error.message}`)
+        chalk21.red(`Failed to update task context: ${error.message}`)
       );
     }
   });
@@ -9687,7 +10975,7 @@ ${currentSummary}
       const key = await tryAuthenticatedKey(configService);
       const projectId = await configService.getProjectId();
       if (!assignee && key && projectId) {
-        console.log(chalk20.blue("Fetching assignable users..."));
+        console.log(chalk21.blue("Fetching assignable users..."));
         const res = await fetch(
           `${API_URL}/projects/${projectId}/collaborators`,
           {
@@ -9726,20 +11014,20 @@ ${currentSummary}
         assignee = response.assignee;
       }
       if (!assignee) {
-        console.log(chalk20.yellow("No assignee provided."));
+        console.log(chalk21.yellow("No assignee provided."));
         return;
       }
       await taskService.updateTask(id, { assignee });
-      console.log(chalk20.green(`
+      console.log(chalk21.green(`
 \u2714 Task ${id} assigned to ${assignee}
 `));
       if (key && projectId) {
         console.log(
-          chalk20.gray("Tip: Run `vem push` to sync assignment to cloud.")
+          chalk21.gray("Tip: Run `vem push` to sync assignment to cloud.")
         );
       }
     } catch (error) {
-      console.error(chalk20.red(`Failed to assign task: ${error.message}`));
+      console.error(chalk21.red(`Failed to assign task: ${error.message}`));
     }
   });
   taskCmd.command("add [title]").description("Create a new task (interactive when title is omitted)").option(
@@ -9778,9 +11066,9 @@ ${currentSummary}
         if (!process.stdin.isTTY) {
           throw new Error("Title is required in non-interactive mode.");
         }
-        console.log(chalk20.cyan("\nTask creation wizard"));
+        console.log(chalk21.cyan("\nTask creation wizard"));
         console.log(
-          chalk20.gray(
+          chalk21.gray(
             "Fill required fields first, then optional fields. Type :back to go back."
           )
         );
@@ -9794,7 +11082,7 @@ ${currentSummary}
               optional: false
             });
             if (prompt.kind === "cancel") {
-              console.log(chalk20.yellow("Task creation cancelled."));
+              console.log(chalk21.yellow("Task creation cancelled."));
               return;
             }
             if (prompt.kind === "next") {
@@ -9813,7 +11101,7 @@ ${currentSummary}
             allowBack: true
           });
           if (priorityPrompt.kind === "cancel") {
-            console.log(chalk20.yellow("Task creation cancelled."));
+            console.log(chalk21.yellow("Task creation cancelled."));
             return;
           }
           if (priorityPrompt.kind === "back") {
@@ -9839,7 +11127,7 @@ ${currentSummary}
           }
         );
         if (optionalMode.kind === "cancel") {
-          console.log(chalk20.yellow("Task creation cancelled."));
+          console.log(chalk21.yellow("Task creation cancelled."));
           return;
         }
         if (optionalMode.kind === "back") {
@@ -9853,7 +11141,7 @@ ${currentSummary}
             allowBack: true
           });
           if (priorityPrompt.kind === "cancel") {
-            console.log(chalk20.yellow("Task creation cancelled."));
+            console.log(chalk21.yellow("Task creation cancelled."));
             return;
           }
           if (priorityPrompt.kind === "back") {
@@ -9863,7 +11151,7 @@ ${currentSummary}
               optional: false
             });
             if (titlePrompt.kind !== "next") {
-              console.log(chalk20.yellow("Task creation cancelled."));
+              console.log(chalk21.yellow("Task creation cancelled."));
               return;
             }
             taskTitle = titlePrompt.value;
@@ -9877,7 +11165,7 @@ ${currentSummary}
               allowBack: false
             });
             if (retryPriorityPrompt.kind !== "next") {
-              console.log(chalk20.yellow("Task creation cancelled."));
+              console.log(chalk21.yellow("Task creation cancelled."));
               return;
             }
             priorityInput = retryPriorityPrompt.value;
@@ -10023,7 +11311,7 @@ ${currentSummary}
               validate: field.validate
             });
             if (prompt.kind === "cancel") {
-              console.log(chalk20.yellow("Task creation cancelled."));
+              console.log(chalk21.yellow("Task creation cancelled."));
               return;
             }
             if (prompt.kind === "back") {
@@ -10041,7 +11329,7 @@ ${currentSummary}
                   allowBack: true
                 });
                 if (gatePrompt.kind === "cancel") {
-                  console.log(chalk20.yellow("Task creation cancelled."));
+                  console.log(chalk21.yellow("Task creation cancelled."));
                   return;
                 }
                 if (gatePrompt.kind === "next" && gatePrompt.value === "skip") {
@@ -10058,7 +11346,7 @@ ${currentSummary}
                     allowBack: true
                   });
                   if (priorityPrompt.kind === "cancel") {
-                    console.log(chalk20.yellow("Task creation cancelled."));
+                    console.log(chalk21.yellow("Task creation cancelled."));
                     return;
                   }
                   if (priorityPrompt.kind === "back") {
@@ -10068,7 +11356,7 @@ ${currentSummary}
                       optional: false
                     });
                     if (titlePrompt.kind !== "next") {
-                      console.log(chalk20.yellow("Task creation cancelled."));
+                      console.log(chalk21.yellow("Task creation cancelled."));
                       return;
                     }
                     taskTitle = titlePrompt.value;
@@ -10174,14 +11462,14 @@ ${currentSummary}
           );
         }
         console.log(
-          chalk20.green(
+          chalk21.green(
             `
 \u2714 Task created: ${remoteTask.id} (cloud + local cache)
 `
           )
         );
         console.log(
-          chalk20.gray(
+          chalk21.gray(
             `Tip: Start working with AI context via \`vem agent --task ${remoteTask.id}\``
           )
         );
@@ -10211,17 +11499,17 @@ ${currentSummary}
         }
       );
       console.log(
-        chalk20.green(`
+        chalk21.green(`
 \u2714 Task created: ${task.id} (local cache)
 `)
       );
       console.log(
-        chalk20.gray(
+        chalk21.gray(
           `Tip: Start working with AI context via \`vem agent --task ${task.id}\``
         )
       );
     } catch (error) {
-      console.error(chalk20.red(`Failed to create task: ${error.message}`));
+      console.error(chalk21.red(`Failed to create task: ${error.message}`));
     }
   });
   taskCmd.command("update <id>").description("Update task metadata").option("--tags <tags>", "Comma-separated tags").option("--type <type>", "Task type (feature, bug, chore, spike, enabler)").option("--estimate-hours <hours>", "Estimated hours (e.g. 2.5)").option("--depends-on <ids>", "Comma-separated task IDs").option("--blocked-by <ids>", "Comma-separated task IDs").option("--recurrence <rule>", "Recurrence rule (weekly, monthly, cron)").option("--owner <id>", "Owner ID").option("--reviewer <id>", "Reviewer ID").option("--parent <id>", "Parent task ID").option("--order <number>", "Subtask order").option("--due-at <iso>", "Due date ISO string (YYYY-MM-DD)").option(
@@ -10284,7 +11572,7 @@ ${currentSummary}
       }
       if (remoteUpdated) {
         console.log(
-          chalk20.green(
+          chalk21.green(
             `
 \u2714 Task ${id} updated${localTask ? " (cloud + local cache)" : " (cloud)"}
 `
@@ -10297,11 +11585,11 @@ ${currentSummary}
           `Task ${id} not found in cloud or local cache. Verify the ID and project link.`
         );
       }
-      console.log(chalk20.green(`
+      console.log(chalk21.green(`
 \u2714 Task ${id} updated (local cache)
 `));
     } catch (error) {
-      console.error(chalk20.red(`Failed to update task: ${error.message}`));
+      console.error(chalk21.red(`Failed to update task: ${error.message}`));
     }
   });
   taskCmd.command("done [id]").description("Mark a task as complete").option(
@@ -10323,7 +11611,7 @@ ${currentSummary}
         );
         if (inProgress.length === 0) {
           console.error(
-            chalk20.yellow(
+            chalk21.yellow(
               "No tasks in progress. Provide an ID explicitly or start a task first."
             )
           );
@@ -10339,7 +11627,7 @@ ${currentSummary}
           }))
         });
         if (!response.id) {
-          console.log(chalk20.yellow("Operation cancelled."));
+          console.log(chalk21.yellow("Operation cancelled."));
           return;
         }
         id = response.id;
@@ -10351,7 +11639,7 @@ ${currentSummary}
       const localTask = await taskService.getTask(id);
       const task = remoteTask ?? localTask;
       if (!task) {
-        console.error(chalk20.red(`Task ${id} not found.`));
+        console.error(chalk21.red(`Task ${id} not found.`));
         return;
       }
       const evidence = parseCommaList(options.evidence) ?? [];
@@ -10386,7 +11674,7 @@ ${currentSummary}
           });
           if (!response.done) {
             console.log(
-              chalk20.yellow(
+              chalk21.yellow(
                 "Task completion cancelled. Complete all validation steps first."
               )
             );
@@ -10433,7 +11721,7 @@ ${currentSummary}
       }
       if (remoteUpdated || remoteContextUpdated) {
         console.log(
-          chalk20.green(
+          chalk21.green(
             `
 \u2714 Task ${id} marked as DONE${localTask ? " (cloud + local cache)" : " (cloud)"}
 `
@@ -10447,12 +11735,12 @@ ${currentSummary}
         );
       }
       console.log(
-        chalk20.green(`
+        chalk21.green(`
 \u2714 Task ${id} marked as DONE (local cache)
 `)
       );
     } catch (error) {
-      console.error(chalk20.red(`Failed to complete task: ${error.message}`));
+      console.error(chalk21.red(`Failed to complete task: ${error.message}`));
     }
   });
   taskCmd.command("start [id]").description("Start working on a task (set status to in-progress)").option("-r, --reasoning <reasoning>", "Reasoning for starting the task").option("--actor <name>", "Actor name").action(async (id, options) => {
@@ -10464,7 +11752,7 @@ ${currentSummary}
           (t) => t.status === "todo" && !t.deleted_at
         );
         if (todoTasks.length === 0) {
-          console.error(chalk20.yellow("No tasks in TODO status to start."));
+          console.error(chalk21.yellow("No tasks in TODO status to start."));
           return;
         }
         const response = await prompts10({
@@ -10477,7 +11765,7 @@ ${currentSummary}
           }))
         });
         if (!response.id) {
-          console.log(chalk20.yellow("Operation cancelled."));
+          console.log(chalk21.yellow("Operation cancelled."));
           return;
         }
         id = response.id;
@@ -10489,15 +11777,15 @@ ${currentSummary}
       const localTask = await taskService.getTask(id);
       const task = remoteTask ?? localTask;
       if (!task) {
-        console.error(chalk20.red(`Task ${id} not found.`));
+        console.error(chalk21.red(`Task ${id} not found.`));
         return;
       }
       if (task.status === "in-progress") {
-        console.log(chalk20.yellow(`Task ${id} is already in progress.`));
+        console.log(chalk21.yellow(`Task ${id} is already in progress.`));
         return;
       }
       if (task.status === "done") {
-        console.error(chalk20.red(`Task ${id} is already completed.`));
+        console.error(chalk21.red(`Task ${id} is already completed.`));
         return;
       }
       const reasoning = options.reasoning || "Started working on task";
@@ -10555,7 +11843,7 @@ ${currentSummary}
       }
       if (remoteUpdated) {
         console.log(
-          chalk20.green(
+          chalk21.green(
             `
 \u2714 Task ${id} is now IN PROGRESS${localTask ? " (cloud + local cache)" : " (cloud)"}
 `
@@ -10569,12 +11857,12 @@ ${currentSummary}
         );
       }
       console.log(
-        chalk20.green(`
+        chalk21.green(`
 \u2714 Task ${id} is now IN PROGRESS (local cache)
 `)
       );
     } catch (error) {
-      console.error(chalk20.red(`Failed to start task: ${error.message}`));
+      console.error(chalk21.red(`Failed to start task: ${error.message}`));
     }
   });
   taskCmd.command("block <id>").description("Mark a task as blocked").option("-r, --reasoning <reasoning>", "Reason for blocking (required)").option("--blocked-by <ids>", "Comma-separated task IDs blocking this task").option("--actor <name>", "Actor name").action(async (id, options) => {
@@ -10586,16 +11874,16 @@ ${currentSummary}
       const localTask = await taskService.getTask(id);
       const task = remoteTask ?? localTask;
       if (!task) {
-        console.error(chalk20.red(`Task ${id} not found.`));
+        console.error(chalk21.red(`Task ${id} not found.`));
         return;
       }
       if (task.status === "done") {
-        console.error(chalk20.red(`Cannot block a completed task.`));
+        console.error(chalk21.red(`Cannot block a completed task.`));
         return;
       }
       if (!options.reasoning) {
         console.error(
-          chalk20.red(
+          chalk21.red(
             "Reasoning is required when blocking a task. Use -r or --reasoning."
           )
         );
@@ -10621,7 +11909,7 @@ ${currentSummary}
       }
       if (remoteUpdated) {
         console.log(
-          chalk20.yellow(
+          chalk21.yellow(
             `
 \u26A0 Task ${id} is now BLOCKED${localTask ? " (cloud + local cache)" : " (cloud)"}
 `
@@ -10635,12 +11923,12 @@ ${currentSummary}
         );
       }
       console.log(
-        chalk20.yellow(`
+        chalk21.yellow(`
 \u26A0 Task ${id} is now BLOCKED (local cache)
 `)
       );
     } catch (error) {
-      console.error(chalk20.red(`Failed to block task: ${error.message}`));
+      console.error(chalk21.red(`Failed to block task: ${error.message}`));
     }
   });
   taskCmd.command("unblock <id>").description("Unblock a task (set status back to todo)").option("-r, --reasoning <reasoning>", "Reason for unblocking").option("--actor <name>", "Actor name").action(async (id, options) => {
@@ -10652,12 +11940,12 @@ ${currentSummary}
       const localTask = await taskService.getTask(id);
       const task = remoteTask ?? localTask;
       if (!task) {
-        console.error(chalk20.red(`Task ${id} not found.`));
+        console.error(chalk21.red(`Task ${id} not found.`));
         return;
       }
       if (task.status !== "blocked") {
         console.log(
-          chalk20.yellow(`Task ${id} is not blocked (status: ${task.status}).`)
+          chalk21.yellow(`Task ${id} is not blocked (status: ${task.status}).`)
         );
         return;
       }
@@ -10680,7 +11968,7 @@ ${currentSummary}
       }
       if (remoteUpdated) {
         console.log(
-          chalk20.green(
+          chalk21.green(
             `
 \u2714 Task ${id} is now unblocked (TODO)${localTask ? " (cloud + local cache)" : " (cloud)"}
 `
@@ -10694,12 +11982,12 @@ ${currentSummary}
         );
       }
       console.log(
-        chalk20.green(`
+        chalk21.green(`
 \u2714 Task ${id} is now unblocked (TODO) (local cache)
 `)
       );
     } catch (error) {
-      console.error(chalk20.red(`Failed to unblock task: ${error.message}`));
+      console.error(chalk21.red(`Failed to unblock task: ${error.message}`));
     }
   });
   taskCmd.command("delete <id>").description("Soft delete a task").option("-r, --reasoning <reasoning>", "Reasoning for deletion").action(async (id, options) => {
@@ -10711,7 +11999,7 @@ ${currentSummary}
       const localTask = await taskService.getTask(id);
       const task = remoteTask ?? localTask;
       if (!task) {
-        console.error(chalk20.red(`Task ${id} not found.`));
+        console.error(chalk21.red(`Task ${id} not found.`));
         return;
       }
       const deletedAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -10727,7 +12015,7 @@ ${currentSummary}
       }
       if (remoteUpdated) {
         console.log(
-          chalk20.green(
+          chalk21.green(
             `
 \u2714 Task ${id} soft deleted${localTask ? " (cloud + local cache)" : " (cloud)"}
 `
@@ -10740,11 +12028,11 @@ ${currentSummary}
           `Task ${id} not found in cloud or local cache. Verify the ID and project link.`
         );
       }
-      console.log(chalk20.green(`
+      console.log(chalk21.green(`
 \u2714 Task ${id} soft deleted (local cache)
 `));
     } catch (error) {
-      console.error(chalk20.red(`Failed to delete task: ${error.message}`));
+      console.error(chalk21.red(`Failed to delete task: ${error.message}`));
     }
   });
   program2.command("delete <id>").description("Soft delete a task").option("-r, --reasoning <reasoning>", "Reasoning for deletion").action(async (id, options) => {
@@ -10756,7 +12044,7 @@ ${currentSummary}
       const localTask = await taskService.getTask(id);
       const task = remoteTask ?? localTask;
       if (!task) {
-        console.error(chalk20.red(`Task ${id} not found.`));
+        console.error(chalk21.red(`Task ${id} not found.`));
         return;
       }
       const deletedAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -10772,7 +12060,7 @@ ${currentSummary}
       }
       if (remoteUpdated) {
         console.log(
-          chalk20.green(
+          chalk21.green(
             `
 \u2714 Task ${id} soft deleted${localTask ? " (cloud + local cache)" : " (cloud)"}
 `
@@ -10785,11 +12073,11 @@ ${currentSummary}
           `Task ${id} not found in cloud or local cache. Verify the ID and project link.`
         );
       }
-      console.log(chalk20.green(`
+      console.log(chalk21.green(`
 \u2714 Task ${id} soft deleted (local cache)
 `));
     } catch (error) {
-      console.error(chalk20.red(`Failed to delete task: ${error.message}`));
+      console.error(chalk21.red(`Failed to delete task: ${error.message}`));
     }
   });
   taskCmd.command("sessions <id>").description("Show all agent sessions attached to a task").action(async (id) => {
@@ -10797,17 +12085,17 @@ ${currentSummary}
     try {
       const task = await taskService.getTask(id);
       if (!task) {
-        console.error(chalk20.red(`Task ${id} not found.`));
+        console.error(chalk21.red(`Task ${id} not found.`));
         return;
       }
       const sessions = task.sessions || [];
       if (sessions.length === 0) {
         console.log(
-          chalk20.yellow(`
+          chalk21.yellow(`
 No agent sessions attached to ${id} yet.`)
         );
         console.log(
-          chalk20.gray(
+          chalk21.gray(
             `  Run "vem task start ${id}" to attach the current session.
 `
           )
@@ -10815,23 +12103,23 @@ No agent sessions attached to ${id} yet.`)
         return;
       }
       console.log(
-        chalk20.bold(`
+        chalk21.bold(`
 \u{1F517} Sessions attached to ${id}: ${task.title}
 `)
       );
-      const table = new Table5({
+      const table = new Table6({
         head: ["Source", "Session ID", "Started", "Summary"].map(
-          (h) => chalk20.white.bold(h)
+          (h) => chalk21.white.bold(h)
         ),
         colWidths: [10, 20, 18, 50],
         style: { border: ["gray"] }
       });
       for (const s of sessions) {
-        const sourceColor = s.source === "copilot" ? chalk20.blue : s.source === "claude" ? chalk20.magenta : chalk20.green;
+        const sourceColor = s.source === "copilot" ? chalk21.blue : s.source === "claude" ? chalk21.magenta : chalk21.green;
         table.push([
           sourceColor(s.source),
-          chalk20.gray(`${s.id.slice(0, 16)}\u2026`),
-          chalk20.white(
+          chalk21.gray(`${s.id.slice(0, 16)}\u2026`),
+          chalk21.white(
             new Date(s.started_at).toLocaleDateString(void 0, {
               month: "short",
               day: "numeric",
@@ -10839,14 +12127,14 @@ No agent sessions attached to ${id} yet.`)
               minute: "2-digit"
             })
           ),
-          chalk20.gray(s.summary?.slice(0, 48) || "\u2014")
+          chalk21.gray(s.summary?.slice(0, 48) || "\u2014")
         ]);
       }
       console.log(table.toString());
       console.log();
     } catch (error) {
       console.error(
-        chalk20.red(`Failed to show task sessions: ${error.message}`)
+        chalk21.red(`Failed to show task sessions: ${error.message}`)
       );
     }
   });
@@ -10858,65 +12146,65 @@ No agent sessions attached to ${id} yet.`)
       if (id) {
         const task = await taskService.getTask(id);
         if (!task) {
-          console.error(chalk20.red(`Task ${id} not found.`));
+          console.error(chalk21.red(`Task ${id} not found.`));
           return;
         }
         const metrics = await taskService.getFlowMetrics(id);
         const fmtMs = (ms) => {
-          if (!ms) return chalk20.gray("\u2014");
+          if (!ms) return chalk21.gray("\u2014");
           const days = Math.floor(ms / 864e5);
           const hrs = Math.floor(ms % 864e5 / 36e5);
           const mins = Math.floor(ms % 36e5 / 6e4);
-          if (days > 0) return chalk20.white(`${days}d ${hrs}h`);
-          if (hrs > 0) return chalk20.white(`${hrs}h ${mins}m`);
-          return chalk20.white(`${mins}m`);
+          if (days > 0) return chalk21.white(`${days}d ${hrs}h`);
+          if (hrs > 0) return chalk21.white(`${hrs}h ${mins}m`);
+          return chalk21.white(`${mins}m`);
         };
-        console.log(chalk20.bold(`
+        console.log(chalk21.bold(`
 \u23F1  Flow Metrics: ${id} \u2014 ${task.title}
 `));
         console.log(
-          `  ${chalk20.gray("Lead time (created \u2192 done):")}  ${fmtMs(metrics.lead_time_ms)}`
+          `  ${chalk21.gray("Lead time (created \u2192 done):")}  ${fmtMs(metrics.lead_time_ms)}`
         );
         console.log(
-          `  ${chalk20.gray("Cycle time (started \u2192 done):")} ${fmtMs(metrics.cycle_time_ms)}`
+          `  ${chalk21.gray("Cycle time (started \u2192 done):")} ${fmtMs(metrics.cycle_time_ms)}`
         );
         if (Object.keys(metrics.time_in_status).length > 0) {
-          console.log(chalk20.gray("\n  Time in each status:"));
+          console.log(chalk21.gray("\n  Time in each status:"));
           for (const [status, ms] of Object.entries(metrics.time_in_status)) {
-            console.log(`    ${chalk20.cyan(status.padEnd(12))} ${fmtMs(ms)}`);
+            console.log(`    ${chalk21.cyan(status.padEnd(12))} ${fmtMs(ms)}`);
           }
         }
         console.log();
       } else {
         const summary = await taskService.getProjectFlowSummary();
         const fmtMs = (ms) => {
-          if (!ms) return chalk20.gray("\u2014");
+          if (!ms) return chalk21.gray("\u2014");
           const days = Math.floor(ms / 864e5);
           const hrs = Math.floor(ms % 864e5 / 36e5);
-          if (days > 0) return chalk20.white(`${days}d ${hrs}h`);
-          return chalk20.white(`${hrs}h`);
+          if (days > 0) return chalk21.white(`${days}d ${hrs}h`);
+          return chalk21.white(`${hrs}h`);
         };
-        console.log(chalk20.bold("\n\u{1F4CA}  Project Flow Summary\n"));
+        console.log(chalk21.bold("\n\u{1F4CA}  Project Flow Summary\n"));
         console.log(
-          `  ${chalk20.gray("WIP (active tasks):")}         ${chalk20.yellow(String(summary.wip_count))}`
+          `  ${chalk21.gray("WIP (active tasks):")}         ${chalk21.yellow(String(summary.wip_count))}`
         );
         console.log(
-          `  ${chalk20.gray("Throughput (last 7d):")}        ${chalk20.white(String(summary.throughput_last_7d))} tasks`
+          `  ${chalk21.gray("Throughput (last 7d):")}        ${chalk21.white(String(summary.throughput_last_7d))} tasks`
         );
         console.log(
-          `  ${chalk20.gray("Throughput (last 30d):")}       ${chalk20.white(String(summary.throughput_last_30d))} tasks`
+          `  ${chalk21.gray("Throughput (last 30d):")}       ${chalk21.white(String(summary.throughput_last_30d))} tasks`
         );
         console.log(
-          `  ${chalk20.gray("Avg cycle time:")}              ${fmtMs(summary.avg_cycle_time_ms)}`
+          `  ${chalk21.gray("Avg cycle time:")}              ${fmtMs(summary.avg_cycle_time_ms)}`
         );
         console.log(
-          `  ${chalk20.gray("Avg lead time:")}               ${fmtMs(summary.avg_lead_time_ms)}`
+          `  ${chalk21.gray("Avg lead time:")}               ${fmtMs(summary.avg_lead_time_ms)}`
         );
         console.log();
       }
     } catch (error) {
       console.error(
-        chalk20.red(`Failed to get flow metrics: ${error.message}`)
+        chalk21.red(`Failed to get flow metrics: ${error.message}`)
       );
     }
   });
@@ -10930,27 +12218,27 @@ No agent sessions attached to ${id} yet.`)
         );
         if (unscored.length === 0) {
           console.log(
-            chalk20.green("\n\u2714 All active tasks have impact scores.\n")
+            chalk21.green("\n\u2714 All active tasks have impact scores.\n")
           );
           return;
         }
-        const table = new Table5({
+        const table = new Table6({
           head: ["ID", "Title", "Priority", "Score"],
           style: { head: ["cyan"] }
         });
         const all = tasks.filter((t) => t.status !== "done" && !t.deleted_at);
         for (const t of all) {
           table.push([
-            chalk20.white(t.id),
+            chalk21.white(t.id),
             t.title,
             formatTaskPriority(t.priority),
-            t.impact_score !== void 0 ? chalk20.yellow(String(Math.round(t.impact_score))) : chalk20.gray("\u2014")
+            t.impact_score !== void 0 ? chalk21.yellow(String(Math.round(t.impact_score))) : chalk21.gray("\u2014")
           ]);
         }
-        console.log(chalk20.bold("\n\u{1F3AF}  Impact Scores\n"));
+        console.log(chalk21.bold("\n\u{1F3AF}  Impact Scores\n"));
         console.log(table.toString());
         console.log(
-          chalk20.gray(
+          chalk21.gray(
             `
   Unscored: ${unscored.length} task(s). Use: vem task score <id> --set <0-100>
 `
@@ -10960,14 +12248,14 @@ No agent sessions attached to ${id} yet.`)
       }
       const task = await taskService.getTask(id);
       if (!task) {
-        console.error(chalk20.red(`Task ${id} not found.`));
+        console.error(chalk21.red(`Task ${id} not found.`));
         return;
       }
       if (options.set !== void 0) {
         const score = Number.parseFloat(options.set);
         if (Number.isNaN(score) || score < 0 || score > 100) {
           console.error(
-            chalk20.red("Score must be a number between 0 and 100.")
+            chalk21.red("Score must be a number between 0 and 100.")
           );
           process.exitCode = 1;
           return;
@@ -10977,23 +12265,23 @@ No agent sessions attached to ${id} yet.`)
           reasoning: options.reasoning
         });
         console.log(
-          chalk20.green(`
+          chalk21.green(`
 \u2714 Impact score for ${id} set to ${score}
 `)
         );
       } else {
-        console.log(chalk20.bold(`
+        console.log(chalk21.bold(`
 \u{1F3AF}  ${id}: ${task.title}`));
         console.log(
-          `  Impact score: ${task.impact_score !== void 0 ? chalk20.yellow(String(Math.round(task.impact_score))) : chalk20.gray("not set")}`
+          `  Impact score: ${task.impact_score !== void 0 ? chalk21.yellow(String(Math.round(task.impact_score))) : chalk21.gray("not set")}`
         );
         console.log(
-          chalk20.gray(`  Set with: vem task score ${id} --set <0-100>
+          chalk21.gray(`  Set with: vem task score ${id} --set <0-100>
 `)
         );
       }
     } catch (error) {
-      console.error(chalk20.red(`Failed to manage score: ${error.message}`));
+      console.error(chalk21.red(`Failed to manage score: ${error.message}`));
     }
   });
   taskCmd.command("ready [id]").description("Mark a task as ready (refined and ready to start)").option("-r, --reasoning <reasoning>", "Reasoning for marking ready").option("--actor <name>", "Actor name").action(async (id, options) => {
@@ -11005,7 +12293,7 @@ No agent sessions attached to ${id} yet.`)
           (t) => t.status === "todo" && !t.deleted_at
         );
         if (todos.length === 0) {
-          console.error(chalk20.yellow("No todo tasks found."));
+          console.error(chalk21.yellow("No todo tasks found."));
           return;
         }
         const response = await prompts10({
@@ -11026,11 +12314,11 @@ No agent sessions attached to ${id} yet.`)
         reasoning: options.reasoning || "Marked as refined and ready to start.",
         actor: actorName
       });
-      console.log(chalk20.cyan(`
+      console.log(chalk21.cyan(`
 \u2714 Task ${id} marked as ready
 `));
     } catch (error) {
-      console.error(chalk20.red(`Failed to mark task ready: ${error.message}`));
+      console.error(chalk21.red(`Failed to mark task ready: ${error.message}`));
     }
   });
   taskCmd.command("iterate <id>").description(
@@ -11052,13 +12340,13 @@ No agent sessions attached to ${id} yet.`)
       const apiKey = await tryAuthenticatedKey(configService);
       if (!apiKey) {
         console.error(
-          chalk20.red("\u2717 Not authenticated. Run `vem login` first.")
+          chalk21.red("\u2717 Not authenticated. Run `vem login` first.")
         );
         process.exit(1);
       }
       if (!await configService.getProjectId()) {
         console.error(
-          chalk20.red(
+          chalk21.red(
             "\u2717 This directory is not linked to a VEM project. Run `vem link` first."
           )
         );
@@ -11069,7 +12357,7 @@ No agent sessions attached to ${id} yet.`)
         (t) => t.id === id || t.id === id.toUpperCase()
       );
       if (!task?.db_id) {
-        console.error(chalk20.red(`\u2717 Task ${id} not found or not synced.`));
+        console.error(chalk21.red(`\u2717 Task ${id} not found or not synced.`));
         process.exit(1);
       }
       const deviceHeaders = await buildDeviceHeaders(configService);
@@ -11084,7 +12372,7 @@ No agent sessions attached to ${id} yet.`)
       if (!runsRes.ok) {
         const data = await runsRes.json().catch(() => ({}));
         console.error(
-          chalk20.red(
+          chalk21.red(
             `\u2717 Failed to fetch runs: ${data.error ?? runsRes.statusText}`
           )
         );
@@ -11098,7 +12386,7 @@ No agent sessions attached to ${id} yet.`)
         );
         if (!runWithPr) {
           console.error(
-            chalk20.yellow(
+            chalk21.yellow(
               `\u2717 No run with a PR found for task ${id}. Create an initial run first.`
             )
           );
@@ -11106,7 +12394,7 @@ No agent sessions attached to ${id} yet.`)
         }
         parentRunId = runWithPr.id;
         console.log(
-          chalk20.gray(
+          chalk21.gray(
             `  Using run ${runWithPr.id.slice(0, 8)} (PR: ${runWithPr.pr_url}) as base.`
           )
         );
@@ -11136,7 +12424,7 @@ No agent sessions attached to ${id} yet.`)
       if (!createRes.ok) {
         const data = await createRes.json().catch(() => ({}));
         console.error(
-          chalk20.red(
+          chalk21.red(
             `\u2717 Failed to start iterative run: ${data.error ?? createRes.statusText}`
           )
         );
@@ -11144,24 +12432,110 @@ No agent sessions attached to ${id} yet.`)
       }
       const result = await createRes.json();
       console.log(
-        chalk20.green(
+        chalk21.green(
           `
 \u2714 Iterative run queued (ID: ${result.run.id.slice(0, 8)}\u2026)
 `
         )
       );
       console.log(
-        chalk20.gray("  The agent will continue from the existing PR branch.")
+        chalk21.gray("  The agent will continue from the existing PR branch.")
       );
       console.log(
-        chalk20.gray("  A new PR will be opened with cumulative changes.")
+        chalk21.gray("  A new PR will be opened with cumulative changes.")
       );
     } catch (error) {
       console.error(
-        chalk20.red(`Failed to start iterative run: ${error.message}`)
+        chalk21.red(`Failed to start iterative run: ${error.message}`)
       );
     }
   });
+  taskCmd.command("spec <id>").description("View or set acceptance criteria for a task").option(
+    "--set <criteria...>",
+    "Set acceptance criteria (space-separated, or use multiple --set flags)"
+  ).option("--add <criterion>", "Add a single acceptance criterion").option("--clear", "Remove all acceptance criteria").action(
+    async (id, options) => {
+      await trackCommandUsage("task.spec");
+      const task = await getRemoteTaskById(id);
+      if (!task) {
+        console.error(chalk21.red(`Task ${id} not found.`));
+        process.exitCode = 1;
+        return;
+      }
+      if (options.clear) {
+        const ok = await updateRemoteTaskMeta(id, {
+          acceptance_criteria: []
+        });
+        if (ok) {
+          console.log(
+            chalk21.green(`\u2714 Cleared acceptance criteria for ${id}.`)
+          );
+        } else {
+          console.error(chalk21.red("Failed to update acceptance criteria."));
+          process.exitCode = 1;
+        }
+        return;
+      }
+      if (options.set) {
+        const criteria2 = Array.isArray(options.set) ? options.set : [options.set];
+        const ok = await updateRemoteTaskMeta(id, {
+          acceptance_criteria: criteria2
+        });
+        if (ok) {
+          console.log(
+            chalk21.green(
+              `\u2714 Set ${criteria2.length} acceptance criteria for ${id}: ${task.title}`
+            )
+          );
+          for (const [i, c] of criteria2.entries()) {
+            console.log(chalk21.gray(`  ${i + 1}. ${c}`));
+          }
+        } else {
+          console.error(chalk21.red("Failed to update acceptance criteria."));
+          process.exitCode = 1;
+        }
+        return;
+      }
+      if (options.add) {
+        const existing = task.acceptance_criteria ?? [];
+        const updated = [...existing, options.add];
+        const ok = await updateRemoteTaskMeta(id, {
+          acceptance_criteria: updated
+        });
+        if (ok) {
+          console.log(
+            chalk21.green(
+              `\u2714 Added criterion (${updated.length} total) for ${id}.`
+            )
+          );
+        } else {
+          console.error(chalk21.red("Failed to update acceptance criteria."));
+          process.exitCode = 1;
+        }
+        return;
+      }
+      const criteria = task.acceptance_criteria ?? [];
+      console.log(
+        chalk21.bold(`
+Acceptance Criteria \u2014 ${id}: ${task.title}
+`)
+      );
+      if (criteria.length === 0) {
+        console.log(chalk21.yellow("  No acceptance criteria defined."));
+        console.log(
+          chalk21.gray(
+            `  Set them with: vem task spec ${id} --set "criterion 1" "criterion 2"
+`
+          )
+        );
+      } else {
+        for (const [i, c] of criteria.entries()) {
+          console.log(`  ${chalk21.cyan(`${i + 1}.`)} ${c}`);
+        }
+        console.log();
+      }
+    }
+  );
 }
 
 // src/runtime/monitoring.ts
@@ -11212,25 +12586,25 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.79",
+  release: "0.1.80",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.79").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.80").addHelpText(
   "after",
   `
-${chalk21.bold("\n\u26A1 Power Workflows:")}
-  ${chalk21.cyan("vem agent")}          Start AI-assisted work (${chalk21.bold("recommended")})
-  ${chalk21.cyan("vem quickstart")}     Interactive setup wizard
-  ${chalk21.cyan("vem status")}         Check your power feature usage
+${chalk22.bold("\n\u26A1 Power Workflows:")}
+  ${chalk22.cyan("vem agent")}          Start AI-assisted work (${chalk22.bold("recommended")})
+  ${chalk22.cyan("vem quickstart")}     Interactive setup wizard
+  ${chalk22.cyan("vem status")}         Check your power feature usage
 
-${chalk21.bold("\u{1F4A1} Getting Started:")}
-  1. ${chalk21.white("vem init")}          Initialize memory
-  2. ${chalk21.white("vem login")}         Authenticate
-  3. ${chalk21.white("vem link")}          Connect to project
-  4. ${chalk21.white("vem agent")}         Start working with AI
+${chalk22.bold("\u{1F4A1} Getting Started:")}
+  1. ${chalk22.white("vem init")}          Initialize memory
+  2. ${chalk22.white("vem login")}         Authenticate
+  3. ${chalk22.white("vem link")}          Connect to project
+  4. ${chalk22.white("vem agent")}         Start working with AI
 
-${chalk21.gray("For full command list: vem --help")}
+${chalk22.gray("For full command list: vem --help")}
 `
 );
 program.hook("preAction", async (_thisCommand, actionCommand) => {
@@ -11248,7 +12622,7 @@ program.hook("preAction", async (_thisCommand, actionCommand) => {
   }
   if (!await isVemInitialized()) {
     console.error(
-      chalk21.red("\n\u2716 vem is not initialized. Run `vem init` first.\n")
+      chalk22.red("\n\u2716 vem is not initialized. Run `vem init` first.\n")
     );
     process.exit(1);
   }
@@ -11267,12 +12641,13 @@ registerMaintenanceCommands(program);
 registerSessionsCommands(program);
 registerInstructionCommands(program);
 registerSkillsCommands(program);
+registerSensorsCommands(program);
 await trackHelpUsageFromArgv(process.argv.slice(2));
 try {
   program.parse();
 } catch (error) {
   NodeSentry.captureException(error);
-  console.error(chalk21.red("\n\u2716 An unexpected error occurred."));
+  console.error(chalk22.red("\n\u2716 An unexpected error occurred."));
   if (process.env.NODE_ENV === "development") {
     console.error(error);
   }

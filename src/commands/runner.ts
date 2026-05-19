@@ -3,13 +3,20 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { arch, homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { ConfigService } from "@vem/core";
+import {
+	ConfigService,
+	CycleValidationService,
+	DECISIONS_DIR,
+	ScalableLogService,
+	SensorsService,
+} from "@vem/core";
 import chalk from "chalk";
 import type { Command } from "commander";
 import {
 	API_URL,
 	buildDeviceHeaders,
 	ensureAuthenticated,
+	validateProject,
 } from "../runtime.js";
 
 type ClaimedTaskRun = {
@@ -22,6 +29,8 @@ type ClaimedTaskRun = {
 	reuse_existing_branch?: boolean;
 	agent_name?: string | null;
 	run_mode?: string | null;
+	cycle_run_id?: string | null;
+	project_id?: string | null;
 };
 
 type ClaimedTerminalSession = {
@@ -30,6 +39,17 @@ type ClaimedTerminalSession = {
 	working_directory?: string | null;
 	cancellation_requested_at?: string | null;
 };
+
+function isVerbose() {
+	return !!process.env.VEM_RUNNER_VERBOSE;
+}
+
+function formatError(err: unknown): string {
+	if (!(err instanceof Error)) return String(err);
+	const parts = [err.message];
+	if (err.cause != null) parts.push(`caused by: ${formatError(err.cause)}`);
+	return parts.join(" — ");
+}
 
 function sleep(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -381,6 +401,35 @@ function parseVemPlanBlock(
 	}
 }
 
+/**
+ * Detect the repository's default branch (main, master, or whatever HEAD points to).
+ * Used as fallback when agent_base_branch is not set on a run.
+ */
+function detectDefaultBranch(remoteName: string): string {
+	// Try the remote's HEAD symbolic ref first (most reliable)
+	try {
+		const ref = runGit([
+			"symbolic-ref",
+			`refs/remotes/${remoteName}/HEAD`,
+		]).trim();
+		// ref is "refs/remotes/origin/main" → extract last segment
+		const parts = ref.split("/");
+		if (parts.length > 0) return parts[parts.length - 1];
+	} catch {
+		// Remote HEAD not set or fetch never run
+	}
+	// Fall back to checking which of main/master exists locally
+	for (const candidate of ["main", "master"]) {
+		try {
+			runGit(["rev-parse", "--verify", `refs/heads/${candidate}`]);
+			return candidate;
+		} catch {
+			// not found
+		}
+	}
+	return "main";
+}
+
 async function resolveGitRemote(
 	configService: ConfigService,
 ): Promise<{ name: string; url: string | null }> {
@@ -495,11 +544,19 @@ async function apiRequest(
 		...(init?.headers ?? {}),
 	};
 
-	return fetch(`${API_URL}${path}`, {
-		...init,
-		headers,
-		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-	});
+	const url = `${API_URL}${path}`;
+	try {
+		return await fetch(url, {
+			...init,
+			headers,
+			signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+		});
+	} catch (err) {
+		if (isVerbose()) {
+			throw new Error(`fetch ${url}: ${formatError(err)}`, { cause: err });
+		}
+		throw err;
+	}
 }
 
 async function appendRunLogs(
@@ -588,6 +645,161 @@ async function completeTaskRunWithRetry(
 	throw new Error(`Failed to complete run ${runId}: ${lastError}`);
 }
 
+/**
+ * For web-triggered cycle validation runs, run sensors + architecture drift
+ * before the AI review agent starts. This mirrors what `vem cycle validate`
+ * does on the CLI, so the Architecture Drift panel is populated and the AI
+ * agent receives real sensor context.
+ *
+ * Runs at most once per cycle_run — skipped if preflight already posted.
+ */
+async function runCyclePreflightIfNeeded(input: {
+	configService: ConfigService;
+	apiKey: string;
+	cycleRunId: string;
+}) {
+	const { configService, apiKey, cycleRunId } = input;
+
+	try {
+		// Check if preflight has already been posted for this cycle_run
+		const statusRes = await apiRequest(
+			configService,
+			apiKey,
+			`/cycle-runs/${cycleRunId}/preflight-status`,
+		);
+		if (!statusRes.ok) return; // non-fatal — skip sensors on API error
+
+		const status = (await statusRes.json()) as {
+			has_preflight: boolean;
+			validation_rules: Record<string, unknown> | null;
+		};
+
+		if (status.has_preflight) return; // already done for this run
+
+		const rules = status.validation_rules ?? {};
+		const runSensors = rules.run_sensors_on_validate !== false; // default true
+
+		console.log(chalk.gray("  [preflight] Running sensor checks..."));
+
+		const sensorsService = new SensorsService();
+		let sensorResults: import("@vem/core").SensorResult[] = [];
+
+		if (runSensors) {
+			try {
+				const config = await sensorsService.readConfig();
+				if (config.sensors.length > 0) {
+					sensorResults = await sensorsService.runSensors();
+					const passed = sensorResults.filter((r) => r.passed).length;
+					console.log(
+						chalk.gray(
+							`  [preflight] Sensors: ${passed}/${sensorResults.length} passed`,
+						),
+					);
+				} else {
+					console.log(
+						chalk.gray("  [preflight] No sensors configured — skipping"),
+					);
+				}
+			} catch {
+				// Sensor failure is non-fatal — continue with empty results
+				console.log(chalk.yellow("  [preflight] Sensor run failed — skipping"));
+			}
+		}
+
+		// Load decisions for architecture drift detection
+		const decisionsLog = new ScalableLogService(DECISIONS_DIR);
+		const decisionsService = new CycleValidationService();
+		let decisions: Array<{
+			id: string;
+			title: string;
+			enforcement_pattern?: string;
+		}> = [];
+		try {
+			const entries = await decisionsLog.getAllEntries();
+			decisions = entries
+				.map((entry) => {
+					const match = entry.content.match(/^enforcement_pattern:\s*(.+)$/m);
+					return {
+						id: entry.id,
+						title: entry.title,
+						enforcement_pattern: match ? match[1].trim() : undefined,
+					};
+				})
+				.filter((d) => d.enforcement_pattern !== undefined);
+		} catch {
+			// Non-fatal — drift scan runs with empty decisions
+		}
+
+		const gitDiff = decisionsService.getGitDiffSince();
+		const preflight = await decisionsService.runPreflight(
+			[], // tasks are reviewed by the AI agent; preflight only needs drift + sensors
+			sensorResults,
+			decisions,
+			gitDiff,
+			{
+				require_evidence_on_done: false,
+				require_all_tasks_done_to_close: false,
+				require_no_blocked_tasks: false,
+				run_sensors_on_validate: runSensors,
+				strict_mode: !!rules.strict_mode,
+				trigger_ai_review_on_close: false,
+				preferred_backend:
+					(rules.preferred_backend as "cloud" | "local") ?? "local",
+			},
+		);
+
+		if (preflight.driftViolations.length > 0) {
+			console.log(
+				chalk.yellow(
+					`  [preflight] Architecture drift: ${preflight.driftViolations.length} violation(s)`,
+				),
+			);
+		}
+
+		// Post preflight results to API so the UI Architecture Drift panel populates
+		await apiRequest(
+			configService,
+			apiKey,
+			`/cycle-runs/${cycleRunId}/preflight`,
+			{
+				method: "PATCH",
+				body: JSON.stringify({
+					ranAt: new Date().toISOString(),
+					taskStats: {
+						total: preflight.totalTasks,
+						done: preflight.doneTasks,
+						blocked: preflight.blockedTasks,
+					},
+					sensorResults: sensorResults.map((s) => ({
+						name: s.name,
+						passed: s.passed,
+						exitCode: s.exitCode,
+						output: s.output
+							.split("\n")
+							.filter((l) => l.trim())
+							.slice(0, 10)
+							.join("\n"),
+					})),
+					driftViolations: preflight.driftViolations.map((v) => ({
+						decision: v.decisionId,
+						pattern: v.pattern ?? "",
+						file: v.file,
+						line: String(v.line),
+						match: v.match,
+					})),
+				}),
+			},
+		);
+
+		console.log(chalk.gray("  [preflight] Sensor + drift results posted"));
+	} catch (err) {
+		// Non-fatal — sensor/drift failures should never block the AI review
+		if (isVerbose()) {
+			console.warn(chalk.yellow(`  [preflight] Warning: ${formatError(err)}`));
+		}
+	}
+}
+
 async function executeClaimedRun(input: {
 	configService: ConfigService;
 	apiKey: string;
@@ -624,8 +836,8 @@ async function executeClaimedRun(input: {
 	let createPr = false;
 	let stdoutBuffer = "";
 	let createdPlanId: string | null = null;
-	const baseBranch = run.agent_base_branch || "main";
 	const remote = await resolveGitRemote(configService);
+	const baseBranch = run.agent_base_branch || detectDefaultBranch(remote.name);
 
 	try {
 		if (hasDirtyWorktree()) {
@@ -684,6 +896,11 @@ async function executeClaimedRun(input: {
 					...process.env,
 					VEM_RUNNER_INSTRUCTIONS: run.user_prompt?.trim() || "",
 					VEM_RUN_MODE: run.run_mode || "implement",
+					// Inject review-submit credentials so `vem review submit` works
+					// from inside the agent subprocess for local unsafe runner runs.
+					VEM_TASK_RUN_ID: run.id,
+					VEM_API_KEY: apiKey,
+					VEM_API_URL: API_URL,
 				},
 				cwd: repoRoot,
 				// detached: true puts the child in its own process group so we can
@@ -753,10 +970,12 @@ async function executeClaimedRun(input: {
 			}
 		}, 30_000);
 
+		const isBufferedMode = isPlanCreationMode || run.run_mode === "review";
+
 		child.stdout.on("data", async (chunk: Buffer | string) => {
 			const text = chunk.toString();
 			process.stdout.write(text);
-			if (isPlanCreationMode) stdoutBuffer += text;
+			if (isBufferedMode) stdoutBuffer += text;
 			void appendRunLogs(configService, apiKey, run.id, [
 				{ sequence: sequence++, stream: "stdout", chunk: text },
 			]);
@@ -765,7 +984,7 @@ async function executeClaimedRun(input: {
 		child.stderr.on("data", async (chunk: Buffer | string) => {
 			const text = chunk.toString();
 			process.stderr.write(text);
-			if (isPlanCreationMode) stdoutBuffer += text;
+			if (isBufferedMode) stdoutBuffer += text;
 			void appendRunLogs(configService, apiKey, run.id, [
 				{ sequence: sequence++, stream: "stderr", chunk: text },
 			]);
@@ -928,6 +1147,11 @@ async function executeClaimedRun(input: {
 				? `Triggered from VEM web.\n\nInstructions:\n${run.user_prompt.trim()}`
 				: "Triggered from VEM web.",
 			...(createdPlanId ? { plan_id: createdPlanId } : {}),
+			// Supply buffered log lines for review runs so applyVemReviewFromLogs
+			// doesn't have to race against async DB writes from appendRunLogs.
+			...(run.run_mode === "review" && stdoutBuffer
+				? { full_log_lines: stdoutBuffer.split("\n") }
+				: {}),
 			summary:
 				completionStatus === "completed"
 					? createdPlanId
@@ -987,8 +1211,8 @@ async function executeClaimedRunInSandbox(input: {
 		appendRunLogs(configService, apiKey, run.id, toFlush).catch(() => {});
 	};
 
-	const baseBranch = run.agent_base_branch || "main";
 	const remote = await resolveGitRemote(configService);
+	const baseBranch = run.agent_base_branch || detectDefaultBranch(remote.name);
 	// Use a unique attempt path — the same run can be re-claimed after a crash,
 	// and a previous attempt's finally block may still be cleaning up the old path.
 	worktreePath = `/tmp/vem-run-${run.id}-${Date.now().toString(36)}`;
@@ -1709,12 +1933,35 @@ export function registerRunnerCommands(program: Command) {
 			"Disable Docker sandbox (run agent directly on host — no isolation)",
 		)
 		.action(async (options, command) => {
+			// Load .env from cwd so vars like VEM_RUNNER_VERBOSE work without
+			// exporting them in the shell (non-fatal if .env doesn't exist).
+			try {
+				process.loadEnvFile();
+			} catch {
+				// no .env file in cwd — fine
+			}
 			const configService = new ConfigService();
 			const apiKey = await ensureAuthenticated(configService);
 			const projectId = await configService.getProjectId();
 
 			if (!projectId) {
 				throw new Error("This repository is not linked to a VEM project.");
+			}
+
+			// Resolve the human-readable project name for the startup banner.
+			// Try the local cache first; fall back to a lightweight API lookup
+			// (e.g., for repos linked before project name caching was introduced).
+			let projectName = await configService.getProjectName();
+			if (!projectName) {
+				try {
+					const check = await validateProject(projectId, apiKey, configService);
+					if (check.name) {
+						projectName = check.name;
+						await configService.setProjectName(check.name);
+					}
+				} catch {
+					// Non-fatal — we'll fall back to showing just the ID.
+				}
 			}
 
 			const useSandbox = !options.unsafe;
@@ -1744,11 +1991,16 @@ export function registerRunnerCommands(program: Command) {
 				"X-Vem-Runner-Id": runnerInstanceId,
 				"X-Vem-Runner-Name": runnerInstanceName,
 			};
+			console.log(chalk.cyan.bold("\n⚡ vem runner starting\n"));
 			console.log(
-				chalk.cyan(
-					`Starting paired runner for project ${projectId} using agent "${agent}" [${modeLabel}] (${runnerInstanceName})...`,
-				),
+				`  ${chalk.gray("Project:")}  ${projectName ? `${chalk.white.bold(projectName)} ${chalk.gray(`(${projectId})`)}` : chalk.white(projectId)}`,
 			);
+			console.log(`  ${chalk.gray("Agent:")}    ${chalk.white(agent)}`);
+			console.log(`  ${chalk.gray("Mode:")}     ${chalk.white(modeLabel)}`);
+			console.log(
+				`  ${chalk.gray("Runner:")}   ${chalk.white(runnerInstanceName)}`,
+			);
+			console.log();
 			if (!useSandbox) {
 				console.log(
 					chalk.yellow(
@@ -1756,11 +2008,45 @@ export function registerRunnerCommands(program: Command) {
 					),
 				);
 			}
+			if (isVerbose()) {
+				console.log(
+					chalk.gray("  🔍 Verbose logging enabled (VEM_RUNNER_VERBOSE=1)."),
+				);
+			}
 
 			let shouldStop = false;
+			let activeJobRunning = false;
 			let consecutiveErrors = 0;
+			let sigintCount = 0;
+			let sigintResetTimer: NodeJS.Timeout | null = null;
+
 			process.on("SIGINT", () => {
-				shouldStop = true;
+				if (!activeJobRunning) {
+					shouldStop = true;
+					process.stderr.write(
+						chalk.gray("\n  Runner stopped. (no active job)\n"),
+					);
+					return;
+				}
+
+				sigintCount++;
+				if (sigintResetTimer) clearTimeout(sigintResetTimer);
+
+				if (sigintCount === 1) {
+					process.stderr.write(
+						chalk.yellow(
+							"\n  ⚠  A job is currently running. Press Ctrl+C again within 5s to force stop, or wait for it to complete.\n",
+						),
+					);
+					sigintResetTimer = setTimeout(() => {
+						sigintCount = 0;
+					}, 5_000);
+				} else {
+					if (sigintResetTimer) clearTimeout(sigintResetTimer);
+					shouldStop = true;
+					process.stderr.write(chalk.red("\n  ✖ Force stopping runner...\n"));
+					process.exit(1);
+				}
 			});
 			process.on("SIGTERM", () => {
 				shouldStop = true;
@@ -1822,26 +2108,46 @@ export function registerRunnerCommands(program: Command) {
 							payload.run.agent_name.trim().length > 0
 								? payload.run.agent_name.trim()
 								: agent;
-						if (useSandbox) {
-							const credentials = collectSandboxCredentials(runAgent);
-							await executeClaimedRunInSandbox({
-								configService,
-								apiKey,
-								projectId,
-								agent: runAgent,
-								run: payload.run,
-								credentials,
-							});
-						} else {
-							await executeClaimedRun({
-								configService,
-								apiKey,
-								projectId,
-								agent: runAgent,
-								useSandbox,
-								agentPinned,
-								run: payload.run,
-							});
+						activeJobRunning = true;
+						try {
+							// For web-triggered cycle validation runs, run sensors + drift
+							// before the AI agent starts so the Architecture Drift panel
+							// in the web UI is populated (mirrors `vem cycle validate`).
+							if (
+								payload.run.cycle_run_id &&
+								payload.run.run_mode === "review"
+							) {
+								await runCyclePreflightIfNeeded({
+									configService,
+									apiKey,
+									cycleRunId: payload.run.cycle_run_id,
+								});
+							}
+
+							if (useSandbox) {
+								const credentials = collectSandboxCredentials(runAgent);
+								await executeClaimedRunInSandbox({
+									configService,
+									apiKey,
+									projectId,
+									agent: runAgent,
+									run: payload.run,
+									credentials,
+								});
+							} else {
+								await executeClaimedRun({
+									configService,
+									apiKey,
+									projectId,
+									agent: runAgent,
+									useSandbox,
+									agentPinned,
+									run: payload.run,
+								});
+							}
+						} finally {
+							activeJobRunning = false;
+							sigintCount = 0;
 						}
 						if (options.once) break;
 						continue;
@@ -1866,15 +2172,21 @@ export function registerRunnerCommands(program: Command) {
 					};
 					if (terminalPayload.session) {
 						consecutiveErrors = 0;
-						await executeClaimedTerminalSession({
-							configService,
-							apiKey,
-							projectId,
-							agent,
-							useSandbox,
-							agentPinned,
-							session: terminalPayload.session,
-						});
+						activeJobRunning = true;
+						try {
+							await executeClaimedTerminalSession({
+								configService,
+								apiKey,
+								projectId,
+								agent,
+								useSandbox,
+								agentPinned,
+								session: terminalPayload.session,
+							});
+						} finally {
+							activeJobRunning = false;
+							sigintCount = 0;
+						}
 						if (options.once) break;
 						continue;
 					}
@@ -1885,8 +2197,11 @@ export function registerRunnerCommands(program: Command) {
 				} catch (pollError: unknown) {
 					consecutiveErrors++;
 					const backoffMs = Math.min(5_000 * consecutiveErrors, 60_000);
-					const msg =
-						pollError instanceof Error ? pollError.message : String(pollError);
+					const msg = isVerbose()
+						? formatError(pollError)
+						: pollError instanceof Error
+							? pollError.message
+							: String(pollError);
 					process.stderr.write(
 						`[runner] poll error (attempt ${consecutiveErrors}): ${msg}. Retrying in ${backoffMs / 1000}s...\n`,
 					);
@@ -1902,5 +2217,6 @@ export function registerRunnerCommands(program: Command) {
 				null,
 				getRunnerCapabilities(agent, useSandbox, agentPinned),
 			);
+			console.log(chalk.gray("\n  Runner offline.\n"));
 		});
 }
