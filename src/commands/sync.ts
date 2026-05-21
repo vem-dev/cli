@@ -752,20 +752,19 @@ export function registerSyncCommands(program: Command) {
 
 				const controller = new AbortController();
 				const timeoutId = setTimeout(() => controller.abort(), 30_000);
+				const url = `${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-review-structured`;
+				console.error(chalk.dim(`[vem review submit] Posting to: ${url}`));
 				let res: Response;
 				try {
-					res = await fetch(
-						`${sandboxApiUrl}/task-runs/${sandboxRunId}/vem-review-structured`,
-						{
-							method: "POST",
-							headers: {
-								Authorization: `Bearer ${sandboxApiKey}`,
-								"Content-Type": "application/json",
-							},
-							body: JSON.stringify({ review: result.data }),
-							signal: controller.signal,
+					res = await fetch(url, {
+						method: "POST",
+						headers: {
+							Authorization: `Bearer ${sandboxApiKey}`,
+							"Content-Type": "application/json",
 						},
-					);
+						body: JSON.stringify({ review: result.data }),
+						signal: controller.signal,
+					});
 				} finally {
 					clearTimeout(timeoutId);
 				}
@@ -782,11 +781,12 @@ export function registerSyncCommands(program: Command) {
 					console.log(chalk.green("\n✔ vem review submitted to API\n"));
 				}
 			} catch (error) {
-				if (error instanceof Error) {
-					console.error(chalk.red("\n✖ Review Submit Failed:"), error.message);
-				} else {
-					console.error(chalk.red("\n✖ Review Submit Failed:"), String(error));
-				}
+				const msg = error instanceof Error ? error.message : String(error);
+				const cause =
+					error instanceof Error && error.cause instanceof Error
+						? ` → ${error.cause.message}`
+						: "";
+				console.error(chalk.red(`\n✖ Review Submit Failed: ${msg}${cause}\n`));
 				process.exitCode = 1;
 			}
 		});
