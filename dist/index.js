@@ -897,6 +897,51 @@ function truncateForDisplay(value, maxChars) {
   return `${trimmed.slice(0, Math.max(0, maxChars - 15)).trimEnd()}
 ...[truncated]`;
 }
+function buildRunnerReviewPrompt(instructions) {
+  const lines = [
+    "You are performing a validation review.",
+    "Read .vem/current_context.md for project context.",
+    "Do NOT implement any changes \u2014 your role is code reviewer only.",
+    ""
+  ];
+  if (instructions) {
+    lines.push(instructions, "");
+  }
+  lines.push(
+    "IMPORTANT: Your output MUST be a vem_review JSON block. Include ALL issue fields,",
+    'especially the "suggestion" field \u2014 this is shown to engineers as actionable guidance:',
+    "```json",
+    "{",
+    '  "issues": [',
+    "    {",
+    '      "severity": "error|warning|info",',
+    '      "title": "Short title",',
+    '      "description": "What is wrong and why",',
+    '      "file_path": "path/to/file.ts",',
+    '      "line_number": 42,',
+    '      "suggestion": "Concrete fix recommendation shown to the engineer"',
+    "    }",
+    "  ],",
+    '  "summary": "Found N issues",',
+    '  "overall_status": "pass|fail|warning"',
+    "}",
+    "```",
+    "",
+    "Then immediately submit the block via:",
+    "```sh",
+    "cat <<'EOF' | vem review submit",
+    "{",
+    '  "issues": [...],',
+    '  "summary": "...",',
+    '  "overall_status": "pass|fail|warning"',
+    "}",
+    "EOF",
+    "```",
+    "",
+    "Do NOT output a vem_update block. Do NOT commit or push changes. Output vem_review only."
+  );
+  return lines.join("\n");
+}
 var AGENT_TASK_STATUSES = /* @__PURE__ */ new Set([
   "todo",
   "in-review",
@@ -1172,7 +1217,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
       await updateTaskMetaRemote(configService, activeTask, {
         raw_vem_update: JSON.parse(JSON.stringify(update)),
-        cli_version: "0.1.81",
+        cli_version: "0.1.82",
         ...changelogEntry ? { changelog_entry: changelogEntry } : {}
       });
     }
@@ -1229,7 +1274,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
       ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
       raw_vem_update: JSON.parse(JSON.stringify(update)),
-      cli_version: "0.1.81",
+      cli_version: "0.1.82",
       // Task memory fields — stored in task_memory_entries on the API side.
       ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
       changelog_entry: changelogReasoning ?? null
@@ -1809,9 +1854,11 @@ This file is generated for the active task. Update task context via:
       const runnerInstructions = process.env.VEM_RUNNER_INSTRUCTIONS?.trim();
       const runnerInstructionsBlock = runnerInstructions ? ` Additional web-run instructions: ${runnerInstructions}.` : "";
       const isPlanCreationMode = process.env.VEM_RUN_MODE === "plan_creation";
+      const isReviewMode = process.env.VEM_RUN_MODE === "review";
+      const reviewPrompt = isReviewMode ? buildRunnerReviewPrompt(runnerInstructions ?? null) : null;
       const agentPrompt = isPlanCreationMode ? `You are working on task ${activeTask?.id || "N/A"} \u2014 research and planning mode.${runnerInstructionsBlock} Read .vem/current_context.md for project context and .vem/task_context.md for task-specific context. Your goal is to research this task deeply and produce a structured plan document. Do NOT write any code. Do NOT commit or push anything. After your research, output a vem_plan JSON block as follows:
 {"vem_plan":{"title":"<concise plan title>","body":"<full markdown plan with sections for Overview, Findings, Recommendations, and Next Steps>"}}
-Output the vem_plan block as the last thing in your response, on its own line.` : `You are working on task ${activeTask?.id || "N/A"}.${childTaskPromptBlock}${runnerInstructionsBlock} Read .vem/current_context.md for project context and .vem/task_context.md for task-specific context. STRICT MEMORY: if you make changes, you must provide a vem_update block that includes context (full updated CONTEXT.md), current_state, changelog_append, decisions_append, and tasks (array \u2014 use the field name "tasks", not "task_update": [{ "id": "${activeTask?.id || "TASK-ID"}", "status": "done", "evidence": [...], "task_context_summary": "..." }]). Complete the task using these instructions. When completing tasks, include your agent name and confirm required validation steps (build/tests) in evidence.`;
+Output the vem_plan block as the last thing in your response, on its own line.` : isReviewMode ? reviewPrompt : `You are working on task ${activeTask?.id || "N/A"}.${childTaskPromptBlock}${runnerInstructionsBlock} Read .vem/current_context.md for project context and .vem/task_context.md for task-specific context. STRICT MEMORY: if you make changes, you must provide a vem_update block that includes context (full updated CONTEXT.md), current_state, changelog_append, decisions_append, and tasks (array \u2014 use the field name "tasks", not "task_update": [{ "id": "${activeTask?.id || "TASK-ID"}", "status": "done", "evidence": [...], "task_context_summary": "..." }]). Complete the task using these instructions. When completing tasks, include your agent name and confirm required validation steps (build/tests) in evidence.`;
       if (baseCmd === "gemini" || baseCmd === "echo") {
         console.log(
           chalk7.cyan(`Auto-injecting context via --prompt-interactive...`)
@@ -1889,7 +1936,7 @@ Output the vem_plan block as the last thing in your response, on its own line.` 
           );
           if (!hasPrompt) {
             const childScopeText = scopedChildTaskIds.length > 0 ? ` and child tasks ${scopedChildTaskIds.join(", ")}` : "";
-            const initialPrompt = `Read .vem/current_context.md and .vem/task_context.md, then start working on task ${activeTask?.id}: ${activeTask?.title}${childScopeText}`;
+            const initialPrompt = isReviewMode ? "Read .vem/current_context.md for project context, then perform the validation review as instructed in the system prompt. Do NOT implement changes. Output a vem_review block with a suggestion for every issue, then submit via `vem review submit`." : `Read .vem/current_context.md and .vem/task_context.md, then start working on task ${activeTask?.id}: ${activeTask?.title}${childScopeText}`;
             launchArgs = [
               "--append-system-prompt",
               agentPrompt,
@@ -1920,7 +1967,9 @@ Output the vem_plan block as the last thing in your response, on its own line.` 
         const hasPrompt = !!firstNonOption || hasInteractiveFlag;
         if (!hasPrompt) {
           const childScopeText = scopedChildTaskIds.length > 0 ? ` and child tasks ${scopedChildTaskIds.join(", ")}` : "";
-          const autonomousPrompt = options.autoExit ? `${agentPrompt}
+          const autonomousPrompt = isReviewMode ? `${agentPrompt}
+
+Read .vem/current_context.md for project context, then perform the validation review as instructed above. Do NOT implement any changes. When done, output a vem_review JSON block (include a "suggestion" for every issue) and submit via \`vem review submit\`.` : options.autoExit ? `${agentPrompt}
 
 Your task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.
 
@@ -6594,7 +6643,7 @@ async function executeClaimedRun(input) {
           { method: "POST", body: JSON.stringify({}) }
         );
         const data = await response.json().catch(() => ({}));
-        if (data.run?.cancellation_requested_at && !cancellationRequested) {
+        if ((data.run?.cancellation_requested_at || data.run?.status === "cancelled") && !cancellationRequested) {
           cancellationRequested = true;
           try {
             process.kill(-child.pid, "SIGTERM");
@@ -7027,7 +7076,7 @@ async function executeClaimedRunInSandbox(input) {
         const data = await heartbeatRes.json();
         const cancellationRequestedAt = data.run?.cancellation_requested_at ?? data.cancellation_requested_at ?? null;
         const maxRuntimeAt = data.run?.max_runtime_at ?? data.max_runtime_at ?? null;
-        if (cancellationRequestedAt && !cancellationRequested) {
+        if ((cancellationRequestedAt || data.run?.status === "cancelled") && !cancellationRequested) {
           cancellationRequested = true;
           completionStatus = "cancelled";
           if (dockerProcess?.pid) {
@@ -7541,33 +7590,55 @@ function registerRunnerCommands(program2) {
           const runAgent = typeof payload.run.agent_name === "string" && payload.run.agent_name.trim().length > 0 ? payload.run.agent_name.trim() : agent;
           activeJobRunning = true;
           try {
+            let skipAgentDueToCancellation = false;
             if (payload.run.cycle_run_id && payload.run.run_mode === "review") {
               await runCyclePreflightIfNeeded({
                 configService,
                 apiKey,
                 cycleRunId: payload.run.cycle_run_id
               });
+              try {
+                const cancelCheckRes = await apiRequest(
+                  configService,
+                  apiKey,
+                  `/task-runs/${payload.run.id}/heartbeat`,
+                  { method: "POST", body: JSON.stringify({}) }
+                );
+                if (cancelCheckRes.ok) {
+                  const cancelData = await cancelCheckRes.json();
+                  if (cancelData.run?.cancellation_requested_at || cancelData.run?.status === "cancelled") {
+                    process.stderr.write(
+                      `[runner] run ${payload.run.id} was cancelled during preflight \u2014 skipping agent spawn
+`
+                    );
+                    skipAgentDueToCancellation = true;
+                  }
+                }
+              } catch {
+              }
             }
-            if (useSandbox) {
-              const credentials = collectSandboxCredentials(runAgent);
-              await executeClaimedRunInSandbox({
-                configService,
-                apiKey,
-                projectId,
-                agent: runAgent,
-                run: payload.run,
-                credentials
-              });
-            } else {
-              await executeClaimedRun({
-                configService,
-                apiKey,
-                projectId,
-                agent: runAgent,
-                useSandbox,
-                agentPinned,
-                run: payload.run
-              });
+            if (!skipAgentDueToCancellation) {
+              if (useSandbox) {
+                const credentials = collectSandboxCredentials(runAgent);
+                await executeClaimedRunInSandbox({
+                  configService,
+                  apiKey,
+                  projectId,
+                  agent: runAgent,
+                  run: payload.run,
+                  credentials
+                });
+              } else {
+                await executeClaimedRun({
+                  configService,
+                  apiKey,
+                  projectId,
+                  agent: runAgent,
+                  useSandbox,
+                  agentPinned,
+                  run: payload.run
+                });
+              }
             }
           } finally {
             activeJobRunning = false;
@@ -12585,11 +12656,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.81",
+  release: "0.1.82",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.81").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.82").addHelpText(
   "after",
   `
 ${chalk22.bold("\n\u26A1 Power Workflows:")}

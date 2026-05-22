@@ -55,6 +55,65 @@ function truncateForDisplay(value: string, maxChars: number): string {
 	return `${trimmed.slice(0, Math.max(0, maxChars - 15)).trimEnd()}\n...[truncated]`;
 }
 
+/**
+ * Builds the agent system prompt for review-mode runs (VEM_RUN_MODE=review).
+ *
+ * Unlike implement-mode, review runs must NOT produce a vem_update block.
+ * They must output a vem_review JSON block that includes per-issue `suggestion`
+ * fields, then immediately submit via `vem review submit`.
+ *
+ * The `instructions` parameter is the full buildValidationPrompt() output stored
+ * in task_run.user_prompt and forwarded as VEM_RUNNER_INSTRUCTIONS by the runner.
+ */
+function buildRunnerReviewPrompt(instructions: string | null): string {
+	const lines: string[] = [
+		"You are performing a validation review.",
+		"Read .vem/current_context.md for project context.",
+		"Do NOT implement any changes — your role is code reviewer only.",
+		"",
+	];
+
+	if (instructions) {
+		lines.push(instructions, "");
+	}
+
+	lines.push(
+		"IMPORTANT: Your output MUST be a vem_review JSON block. Include ALL issue fields,",
+		'especially the "suggestion" field — this is shown to engineers as actionable guidance:',
+		"```json",
+		"{",
+		'  "issues": [',
+		"    {",
+		'      "severity": "error|warning|info",',
+		'      "title": "Short title",',
+		'      "description": "What is wrong and why",',
+		'      "file_path": "path/to/file.ts",',
+		'      "line_number": 42,',
+		'      "suggestion": "Concrete fix recommendation shown to the engineer"',
+		"    }",
+		"  ],",
+		'  "summary": "Found N issues",',
+		'  "overall_status": "pass|fail|warning"',
+		"}",
+		"```",
+		"",
+		"Then immediately submit the block via:",
+		"```sh",
+		"cat <<'EOF' | vem review submit",
+		"{",
+		'  "issues": [...],',
+		'  "summary": "...",',
+		'  "overall_status": "pass|fail|warning"',
+		"}",
+		"EOF",
+		"```",
+		"",
+		"Do NOT output a vem_update block. Do NOT commit or push changes. Output vem_review only.",
+	);
+
+	return lines.join("\n");
+}
+
 type AgentTask = Awaited<ReturnType<typeof taskService.getTasks>>[number];
 
 const AGENT_TASK_STATUSES = new Set([
@@ -1343,10 +1402,17 @@ This file is generated for the active task. Update task context via:
 					: "";
 
 				const isPlanCreationMode = process.env.VEM_RUN_MODE === "plan_creation";
+				const isReviewMode = process.env.VEM_RUN_MODE === "review";
+
+				const reviewPrompt = isReviewMode
+					? buildRunnerReviewPrompt(runnerInstructions ?? null)
+					: null;
 
 				const agentPrompt = isPlanCreationMode
 					? `You are working on task ${activeTask?.id || "N/A"} — research and planning mode.${runnerInstructionsBlock} Read .vem/current_context.md for project context and .vem/task_context.md for task-specific context. Your goal is to research this task deeply and produce a structured plan document. Do NOT write any code. Do NOT commit or push anything. After your research, output a vem_plan JSON block as follows:\n{"vem_plan":{"title":"<concise plan title>","body":"<full markdown plan with sections for Overview, Findings, Recommendations, and Next Steps>"}}\nOutput the vem_plan block as the last thing in your response, on its own line.`
-					: `You are working on task ${activeTask?.id || "N/A"}.${childTaskPromptBlock}${runnerInstructionsBlock} Read .vem/current_context.md for project context and .vem/task_context.md for task-specific context. STRICT MEMORY: if you make changes, you must provide a vem_update block that includes context (full updated CONTEXT.md), current_state, changelog_append, decisions_append, and tasks (array — use the field name "tasks", not "task_update": [{ "id": "${activeTask?.id || "TASK-ID"}", "status": "done", "evidence": [...], "task_context_summary": "..." }]). Complete the task using these instructions. When completing tasks, include your agent name and confirm required validation steps (build/tests) in evidence.`;
+					: isReviewMode
+						? (reviewPrompt as string)
+						: `You are working on task ${activeTask?.id || "N/A"}.${childTaskPromptBlock}${runnerInstructionsBlock} Read .vem/current_context.md for project context and .vem/task_context.md for task-specific context. STRICT MEMORY: if you make changes, you must provide a vem_update block that includes context (full updated CONTEXT.md), current_state, changelog_append, decisions_append, and tasks (array — use the field name "tasks", not "task_update": [{ "id": "${activeTask?.id || "TASK-ID"}", "status": "done", "evidence": [...], "task_context_summary": "..." }]). Complete the task using these instructions. When completing tasks, include your agent name and confirm required validation steps (build/tests) in evidence.`;
 
 				// Tool-specific injections
 				if (baseCmd === "gemini" || baseCmd === "echo") {
@@ -1438,7 +1504,9 @@ This file is generated for the active task. Update task context via:
 								scopedChildTaskIds.length > 0
 									? ` and child tasks ${scopedChildTaskIds.join(", ")}`
 									: "";
-							const initialPrompt = `Read .vem/current_context.md and .vem/task_context.md, then start working on task ${activeTask?.id}: ${activeTask?.title}${childScopeText}`;
+							const initialPrompt = isReviewMode
+								? "Read .vem/current_context.md for project context, then perform the validation review as instructed in the system prompt. Do NOT implement changes. Output a vem_review block with a suggestion for every issue, then submit via `vem review submit`."
+								: `Read .vem/current_context.md and .vem/task_context.md, then start working on task ${activeTask?.id}: ${activeTask?.title}${childScopeText}`;
 							launchArgs = [
 								"--append-system-prompt",
 								agentPrompt,
@@ -1477,9 +1545,11 @@ This file is generated for the active task. Update task context via:
 						// In auto-exit (sandbox/cloud) mode the agent must complete the
 						// full task in one session. Use an action-first prompt so copilot
 						// doesn't stop after reading context files.
-						const autonomousPrompt = options.autoExit
-							? `${agentPrompt}\n\nYour task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.\n\nThis is a fully autonomous session — you MUST complete the FULL implementation before exiting:\n1. Read .vem/task_context.md and .vem/current_context.md for task and project context\n2. Explore the repository (list dirs, read package.json and relevant source files)\n3. Write ALL required code changes — create or edit files, do not just describe them\n4. Run existing tests/builds to verify your changes compile and pass\n5. Output the vem_update block only after all code changes are made\n\nStart implementing NOW. Do NOT stop after reading context — proceed directly to writing code.`
-							: `${agentPrompt}\n\nYour task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.\n\nStart by reading .vem/task_context.md and .vem/current_context.md for task and project context. Then explore the repository structure (list directories, read key files like package.json, README, and relevant source files) to understand the codebase before writing any code. Implement all required changes, run any existing tests or builds to verify, then provide the vem_update block.`;
+						const autonomousPrompt = isReviewMode
+							? `${agentPrompt}\n\nRead .vem/current_context.md for project context, then perform the validation review as instructed above. Do NOT implement any changes. When done, output a vem_review JSON block (include a "suggestion" for every issue) and submit via \`vem review submit\`.`
+							: options.autoExit
+								? `${agentPrompt}\n\nYour task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.\n\nThis is a fully autonomous session — you MUST complete the FULL implementation before exiting:\n1. Read .vem/task_context.md and .vem/current_context.md for task and project context\n2. Explore the repository (list dirs, read package.json and relevant source files)\n3. Write ALL required code changes — create or edit files, do not just describe them\n4. Run existing tests/builds to verify your changes compile and pass\n5. Output the vem_update block only after all code changes are made\n\nStart implementing NOW. Do NOT stop after reading context — proceed directly to writing code.`
+								: `${agentPrompt}\n\nYour task is ${activeTask?.id}: ${activeTask?.title}${childScopeText}.\n\nStart by reading .vem/task_context.md and .vem/current_context.md for task and project context. Then explore the repository structure (list directories, read key files like package.json, README, and relevant source files) to understand the codebase before writing any code. Implement all required changes, run any existing tests or builds to verify, then provide the vem_update block.`;
 
 						if (options.autoExit) {
 							// Non-interactive (sandbox/cloud) mode: use -p + --yolo so copilot

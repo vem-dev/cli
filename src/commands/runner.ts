@@ -922,9 +922,14 @@ async function executeClaimedRun(input: {
 					run?: {
 						cancellation_requested_at?: string | null;
 						max_runtime_at?: string | null;
+						status?: string | null;
 					};
 				};
-				if (data.run?.cancellation_requested_at && !cancellationRequested) {
+				if (
+					(data.run?.cancellation_requested_at ||
+						data.run?.status === "cancelled") &&
+					!cancellationRequested
+				) {
 					cancellationRequested = true;
 					try {
 						process.kill(-child.pid!, "SIGTERM");
@@ -1469,6 +1474,7 @@ async function executeClaimedRunInSandbox(input: {
 					run?: {
 						cancellation_requested_at?: string | null;
 						max_runtime_at?: string | null;
+						status?: string | null;
 					};
 					cancellation_requested_at?: string | null;
 					max_runtime_at?: string | null;
@@ -1479,7 +1485,10 @@ async function executeClaimedRunInSandbox(input: {
 					null;
 				const maxRuntimeAt =
 					data.run?.max_runtime_at ?? data.max_runtime_at ?? null;
-				if (cancellationRequestedAt && !cancellationRequested) {
+				if (
+					(cancellationRequestedAt || data.run?.status === "cancelled") &&
+					!cancellationRequested
+				) {
 					cancellationRequested = true;
 					completionStatus = "cancelled";
 					if (dockerProcess?.pid) {
@@ -2113,6 +2122,7 @@ export function registerRunnerCommands(program: Command) {
 							// For web-triggered cycle validation runs, run sensors + drift
 							// before the AI agent starts so the Architecture Drift panel
 							// in the web UI is populated (mirrors `vem cycle validate`).
+							let skipAgentDueToCancellation = false;
 							if (
 								payload.run.cycle_run_id &&
 								payload.run.run_mode === "review"
@@ -2122,28 +2132,62 @@ export function registerRunnerCommands(program: Command) {
 									apiKey,
 									cycleRunId: payload.run.cycle_run_id,
 								});
+
+								// Check if the run was cancelled while the preflight was running.
+								// The cycle-run cancel endpoint sets task_run.cancellation_requested_at
+								// and task_run.status = "cancelled"; detect either signal here so
+								// we don't spawn the agent subprocess unnecessarily.
+								try {
+									const cancelCheckRes = await apiRequest(
+										configService,
+										apiKey,
+										`/task-runs/${payload.run.id}/heartbeat`,
+										{ method: "POST", body: JSON.stringify({}) },
+									);
+									if (cancelCheckRes.ok) {
+										const cancelData = (await cancelCheckRes.json()) as {
+											run?: {
+												cancellation_requested_at?: string | null;
+												status?: string | null;
+											};
+										};
+										if (
+											cancelData.run?.cancellation_requested_at ||
+											cancelData.run?.status === "cancelled"
+										) {
+											process.stderr.write(
+												`[runner] run ${payload.run.id} was cancelled during preflight — skipping agent spawn\n`,
+											);
+											skipAgentDueToCancellation = true;
+										}
+									}
+								} catch {
+									// Non-fatal; proceed and let executeClaimedRun handle it.
+								}
 							}
 
-							if (useSandbox) {
-								const credentials = collectSandboxCredentials(runAgent);
-								await executeClaimedRunInSandbox({
-									configService,
-									apiKey,
-									projectId,
-									agent: runAgent,
-									run: payload.run,
-									credentials,
-								});
-							} else {
-								await executeClaimedRun({
-									configService,
-									apiKey,
-									projectId,
-									agent: runAgent,
-									useSandbox,
-									agentPinned,
-									run: payload.run,
-								});
+							if (!skipAgentDueToCancellation) {
+								if (useSandbox) {
+									const credentials = collectSandboxCredentials(runAgent);
+									await executeClaimedRunInSandbox({
+										configService,
+										apiKey,
+										projectId,
+										agent: runAgent,
+										run: payload.run,
+										credentials,
+									});
+								} else {
+									await executeClaimedRun({
+										configService,
+										apiKey,
+										projectId,
+										agent: runAgent,
+										useSandbox,
+										agentPinned,
+										run: payload.run,
+									});
+								}
 							}
 						} finally {
 							activeJobRunning = false;
