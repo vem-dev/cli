@@ -57,12 +57,11 @@ vem task add "Implement GitHub App webhook retries" --priority high --type featu
 vem task list
 vem task start TASK-001 --reasoning "Starting implementation"
 vem task done TASK-001 --evidence "pnpm test" --reasoning "Tests passed and behavior validated"
-vem task update TASK-001 --status in-review
-vem task block TASK-001 --reason "Waiting on API design"
+vem task block TASK-001 --reasoning "Waiting on API design"
 vem task unblock TASK-001
 vem task delete TASK-001
-vem task details [id]           # Show full task details
-vem task subtasks [id]          # Show parent task and its subtasks
+vem task details --id <id>       # Show full task details
+vem task subtasks --parent <id> # Show parent task and its subtasks
 vem task context <id>           # View or update task context
 vem task assign <id> [assignee] # Assign a task to a user
 vem task sessions <id>          # Show all agent sessions attached to a task
