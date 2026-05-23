@@ -61,7 +61,7 @@ export function registerPlanCommands(program: Command) {
 			const projectId = await configService.getProjectId();
 			if (!projectId) {
 				console.error(
-					chalk.red("No project configured. Run `vem setup` first."),
+					chalk.red("No project configured. Run `vem init`, `vem login`, and `vem link` first."),
 				);
 				process.exit(1);
 			}
@@ -222,7 +222,7 @@ export function registerPlanCommands(program: Command) {
 			const projectId = await configService.getProjectId();
 			if (!projectId) {
 				console.error(
-					chalk.red("No project configured. Run `vem setup` first."),
+					chalk.red("No project configured. Run `vem init`, `vem login`, and `vem link` first."),
 				);
 				process.exit(1);
 			}
@@ -309,7 +309,7 @@ export function registerPlanCommands(program: Command) {
 			const projectId = await configService.getProjectId();
 			if (!projectId) {
 				console.error(
-					chalk.red("No project configured. Run `vem setup` first."),
+					chalk.red("No project configured. Run `vem init`, `vem login`, and `vem link` first."),
 				);
 				process.exit(1);
 			}
@@ -475,7 +475,7 @@ export function registerPlanCommands(program: Command) {
 			const projectId = await configService.getProjectId();
 			if (!projectId) {
 				console.error(
-					chalk.red("No project configured. Run `vem setup` first."),
+					chalk.red("No project configured. Run `vem init`, `vem login`, and `vem link` first."),
 				);
 				process.exit(1);
 			}

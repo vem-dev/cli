@@ -1217,7 +1217,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
       await updateTaskMetaRemote(configService, activeTask, {
         raw_vem_update: JSON.parse(JSON.stringify(update)),
-        cli_version: "0.1.83",
+        cli_version: "0.1.85",
         ...changelogEntry ? { changelog_entry: changelogEntry } : {}
       });
     }
@@ -1274,7 +1274,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
       ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
       raw_vem_update: JSON.parse(JSON.stringify(update)),
-      cli_version: "0.1.83",
+      cli_version: "0.1.85",
       // Task memory fields — stored in task_memory_entries on the API side.
       ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
       changelog_entry: changelogReasoning ?? null
@@ -5028,7 +5028,7 @@ function registerPlanCommands(program2) {
     const projectId = await configService.getProjectId();
     if (!projectId) {
       console.error(
-        chalk12.red("No project configured. Run `vem setup` first.")
+        chalk12.red("No project configured. Run `vem init`, `vem login`, and `vem link` first.")
       );
       process.exit(1);
     }
@@ -5156,7 +5156,7 @@ function registerPlanCommands(program2) {
     const projectId = await configService.getProjectId();
     if (!projectId) {
       console.error(
-        chalk12.red("No project configured. Run `vem setup` first.")
+        chalk12.red("No project configured. Run `vem init`, `vem login`, and `vem link` first.")
       );
       process.exit(1);
     }
@@ -5230,7 +5230,7 @@ function registerPlanCommands(program2) {
     const projectId = await configService.getProjectId();
     if (!projectId) {
       console.error(
-        chalk12.red("No project configured. Run `vem setup` first.")
+        chalk12.red("No project configured. Run `vem init`, `vem login`, and `vem link` first.")
       );
       process.exit(1);
     }
@@ -5373,7 +5373,7 @@ ${plan.title}`));
     const projectId = await configService.getProjectId();
     if (!projectId) {
       console.error(
-        chalk12.red("No project configured. Run `vem setup` first.")
+        chalk12.red("No project configured. Run `vem init`, `vem login`, and `vem link` first.")
       );
       process.exit(1);
     }
@@ -5983,7 +5983,7 @@ import { arch, homedir } from "os";
 import { dirname as dirname2, resolve as resolve2 } from "path";
 import chalk14 from "chalk";
 function isVerbose() {
-  return !!process.env.VEM_RUNNER_VERBOSE;
+  return process.env.VEM_RUNNER_VERBOSE === "1";
 }
 function formatError(err) {
   if (!(err instanceof Error)) return String(err);
@@ -6029,7 +6029,7 @@ function commandExists(command) {
     return false;
   }
 }
-var KNOWN_RUNNER_AGENTS = ["copilot", "gh", "claude", "codex"];
+var KNOWN_RUNNER_AGENTS = ["copilot", "gh", "claude", "gemini", "codex"];
 function hasSandboxCredentials(agent) {
   if (agent === "claude") {
     return typeof process.env.ANTHROPIC_API_KEY === "string" && process.env.ANTHROPIC_API_KEY.trim().length > 0;
@@ -12105,51 +12105,6 @@ ${currentSummary}
       console.error(chalk21.red(`Failed to delete task: ${error.message}`));
     }
   });
-  program2.command("delete <id>").description("Soft delete a task").option("-r, --reasoning <reasoning>", "Reasoning for deletion").action(async (id, options) => {
-    try {
-      const [remoteTask] = await getDisplayTasks({
-        id,
-        includeDeleted: true
-      });
-      const localTask = await taskService.getTask(id);
-      const task = remoteTask ?? localTask;
-      if (!task) {
-        console.error(chalk21.red(`Task ${id} not found.`));
-        return;
-      }
-      const deletedAt = (/* @__PURE__ */ new Date()).toISOString();
-      const remoteUpdated = await updateRemoteTaskMeta(id, {
-        deleted_at: deletedAt,
-        reasoning: options.reasoning
-      });
-      if (localTask) {
-        await taskService.updateTask(id, {
-          deleted_at: deletedAt,
-          reasoning: options.reasoning
-        });
-      }
-      if (remoteUpdated) {
-        console.log(
-          chalk21.green(
-            `
-\u2714 Task ${id} soft deleted${localTask ? " (cloud + local cache)" : " (cloud)"}
-`
-          )
-        );
-        return;
-      }
-      if (!localTask) {
-        throw new Error(
-          `Task ${id} not found in cloud or local cache. Verify the ID and project link.`
-        );
-      }
-      console.log(chalk21.green(`
-\u2714 Task ${id} soft deleted (local cache)
-`));
-    } catch (error) {
-      console.error(chalk21.red(`Failed to delete task: ${error.message}`));
-    }
-  });
   taskCmd.command("sessions <id>").description("Show all agent sessions attached to a task").action(async (id) => {
     await trackCommandUsage("task sessions");
     try {
@@ -12656,11 +12611,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.83",
+  release: "0.1.85",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.83").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.85").addHelpText(
   "after",
   `
 ${chalk22.bold("\n\u26A1 Power Workflows:")}

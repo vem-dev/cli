@@ -41,7 +41,7 @@ type ClaimedTerminalSession = {
 };
 
 function isVerbose() {
-	return !!process.env.VEM_RUNNER_VERBOSE;
+	return process.env.VEM_RUNNER_VERBOSE === "1";
 }
 
 function formatError(err: unknown): string {
@@ -103,7 +103,7 @@ function commandExists(command: string) {
 	}
 }
 
-const KNOWN_RUNNER_AGENTS = ["copilot", "gh", "claude", "codex"] as const;
+const KNOWN_RUNNER_AGENTS = ["copilot", "gh", "claude", "gemini", "codex"] as const;
 
 function hasSandboxCredentials(agent: string) {
 	if (agent === "claude") {

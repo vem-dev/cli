@@ -2444,56 +2444,6 @@ export function registerTaskCommands(program: Command) {
 			}
 		});
 
-	program
-		.command("delete <id>")
-		.description("Soft delete a task")
-		.option("-r, --reasoning <reasoning>", "Reasoning for deletion")
-		.action(async (id, options) => {
-			try {
-				const [remoteTask] = await getDisplayTasks({
-					id,
-					includeDeleted: true,
-				});
-				const localTask = await taskService.getTask(id);
-				const task = remoteTask ?? localTask;
-				if (!task) {
-					console.error(chalk.red(`Task ${id} not found.`));
-					return;
-				}
-
-				const deletedAt = new Date().toISOString();
-				const remoteUpdated = await updateRemoteTaskMeta(id, {
-					deleted_at: deletedAt,
-					reasoning: options.reasoning,
-				});
-				if (localTask) {
-					await taskService.updateTask(id, {
-						deleted_at: deletedAt,
-						reasoning: options.reasoning,
-					});
-				}
-
-				if (remoteUpdated) {
-					console.log(
-						chalk.green(
-							`\n✔ Task ${id} soft deleted${localTask ? " (cloud + local cache)" : " (cloud)"}\n`,
-						),
-					);
-					return;
-				}
-
-				if (!localTask) {
-					throw new Error(
-						`Task ${id} not found in cloud or local cache. Verify the ID and project link.`,
-					);
-				}
-
-				console.log(chalk.green(`\n✔ Task ${id} soft deleted (local cache)\n`));
-			} catch (error: any) {
-				console.error(chalk.red(`Failed to delete task: ${error.message}`));
-			}
-		});
-
 	taskCmd
 		.command("sessions <id>")
 		.description("Show all agent sessions attached to a task")
