@@ -108,6 +108,53 @@ vem task update <id> [options]  # Update task metadata (see options below)
 | `--cycle <id>` | Filter by cycle ID (e.g. `CYCLE-001`) |
 | `--flow` | Show flow metrics column (cycle time) |
 
+### `vem task start [id]` Options
+
+| Option | Description |
+|---|---|
+| `-r, --reasoning <text>` | Reasoning for starting the task |
+| `--actor <name>` | Actor name recorded in the audit log |
+
+### `vem task ready [id]` Options
+
+| Option | Description |
+|---|---|
+| `-r, --reasoning <text>` | Reasoning for marking the task ready |
+| `--actor <name>` | Actor name recorded in the audit log |
+
+### `vem task done [id]` Options
+
+| Option | Description |
+|---|---|
+| `-e, --evidence <evidence>` | Evidence for completion (file path or command); comma-separated for multiple entries |
+| `-r, --reasoning <text>` | Reasoning for completion |
+| `--validation <steps>` | Comma-separated validation steps completed (required when the task has validation steps defined) |
+| `--actor <name>` | Actor name recorded in the audit log |
+| `--context-summary <summary>` | Summary of the task context to preserve after completion |
+
+### `vem task block <id>` Options
+
+| Option | Description |
+|---|---|
+| `-r, --reasoning <text>` | Reason for blocking the task |
+| `--blocked-by <ids>` | Comma-separated task IDs that are blocking this task |
+| `--actor <name>` | Actor name recorded in the audit log |
+
+### `vem task score [id]` Options
+
+| Option | Description |
+|---|---|
+| `--set <score>` | Set impact score manually (0–100) |
+| `-r, --reasoning <text>` | Reasoning for the score change |
+
+### `vem task spec <id>` Options
+
+| Option | Description |
+|---|---|
+| `--set <criteria...>` | Set acceptance criteria (replaces all existing criteria) |
+| `--add <criterion>` | Add a single acceptance criterion |
+| `--clear` | Remove all acceptance criteria |
+
 ### `vem task unblock` Options
 
 | Option | Description |
