@@ -29,7 +29,7 @@ import {
   isVemInitialized,
   listAllAgentSessions,
   parseVemUpdateBlock
-} from "./chunk-IEMRECBG.js";
+} from "./chunk-ELJX7OKV.js";
 import {
   readCopilotSessionDetail
 } from "./chunk-PO3WNPAJ.js";
@@ -4433,7 +4433,7 @@ function registerInstructionCommands(program2) {
   constitutionCmd.command("edit").description("Edit the Agent Constitution in your $EDITOR").action(async () => {
     await trackCommandUsage("constitution.edit");
     const { execSync: execSync6 } = await import("child_process");
-    const { getVemDir: getVemDir2 } = await import("./dist-QMJVQG6J.js");
+    const { getVemDir: getVemDir2 } = await import("./dist-33DSFTS2.js");
     const vemDir = await getVemDir2();
     const constitutionPath = path.join(vemDir, "CONSTITUTION.md");
     const exists = await constitutionService.exists();
@@ -4695,7 +4695,7 @@ function registerMaintenanceCommands(program2) {
   });
   program2.command("diff").description("Show differences between local and cloud state").option("--detailed", "Show detailed content diffs").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DiffService } = await import("./dist-QMJVQG6J.js");
+      const { DiffService } = await import("./dist-33DSFTS2.js");
       const diffService = new DiffService();
       const result = await diffService.compareWithLastPush();
       if (options.json) {
@@ -4753,7 +4753,7 @@ ${"\u2500".repeat(50)}`));
   });
   program2.command("doctor").description("Run health checks on VEM setup").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DoctorService } = await import("./dist-QMJVQG6J.js");
+      const { DoctorService } = await import("./dist-33DSFTS2.js");
       const doctorService = new DoctorService();
       const results = await doctorService.runAllChecks();
       if (options.json) {

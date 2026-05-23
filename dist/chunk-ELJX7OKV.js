@@ -15959,7 +15959,7 @@ var ConfigService = class {
   // --- Global Scoped ---
   async getApiKey() {
     const config2 = await this.readGlobalConfig();
-    return config2.api_key || process.env.VEM_API_KEY;
+    return process.env.VEM_API_KEY || config2.api_key;
   }
   async getDeviceId() {
     const config2 = await this.readGlobalConfig();
@@ -18224,4 +18224,4 @@ export {
   WebhookService,
   WorkflowGuideService
 };
-//# sourceMappingURL=chunk-IEMRECBG.js.map
+//# sourceMappingURL=chunk-ELJX7OKV.js.map
