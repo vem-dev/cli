@@ -55,11 +55,12 @@ vem --help
 ```bash
 vem task add "Implement GitHub App webhook retries" --priority high --type feature
 vem task list
+vem task list --status in-progress
 vem task start TASK-001 --reasoning "Starting implementation"
 vem task done TASK-001 --evidence "pnpm test" --reasoning "Tests passed and behavior validated"
 vem task block TASK-001 --reasoning "Waiting on API design"
-vem task unblock TASK-001
-vem task delete TASK-001
+vem task unblock TASK-001 --reasoning "Blocker resolved"
+vem task delete TASK-001 --reasoning "No longer needed"
 vem task details --id <id>       # Show full task details
 vem task subtasks --parent <id> # Show parent task and its subtasks
 vem task context <id>           # View or update task context
@@ -72,6 +73,53 @@ vem task iterate <id>           # Iterate on a task that already has a PR
 vem task spec <id>              # View or set acceptance criteria
 vem task update <id> [options]  # Update task metadata (see options below)
 ```
+
+### `vem task add` Options
+
+| Option | Description |
+|---|---|
+| `-p, --priority <priority>` | Priority: `low`, `medium`, `high`, `critical` |
+| `-d, --description <text>` | Task description |
+| `--tags <tags>` | Comma-separated tags |
+| `--type <type>` | Task type: `feature`, `bug`, `chore`, `spike`, `enabler` |
+| `--estimate-hours <hours>` | Estimated hours (e.g. `2.5`) |
+| `--depends-on <ids>` | Comma-separated task IDs this task depends on |
+| `--blocked-by <ids>` | Comma-separated task IDs blocking this task |
+| `--recurrence <rule>` | Recurrence rule: `weekly`, `monthly`, or a cron expression |
+| `--due-at <iso>` | Due date as ISO string (e.g. `2025-06-01`) |
+| `--validation <steps>` | Comma-separated validation steps |
+| `--cycle <id>` | Assign to a cycle (e.g. `CYCLE-001`) |
+| `--impact-score <score>` | Impact score 0–100 (RICE-based priority) |
+| `--owner <id>` | Owner user ID |
+| `--reviewer <id>` | Reviewer user ID |
+| `--parent <id>` | Parent task ID (for subtasks) |
+| `--order <number>` | Subtask display order |
+| `--actor <name>` | Actor name recorded in the audit log |
+| `-r, --reasoning <text>` | Reasoning for task creation |
+
+### `vem task list` Options
+
+| Option | Description |
+|---|---|
+| `--all` | Include completed tasks |
+| `--deleted` | Show only deleted tasks |
+| `--status <status>` | Filter by status: `todo`, `ready`, `in-review`, `in-progress`, `blocked`, `done` |
+| `--done` | Show only completed tasks (alias for `--status done`) |
+| `--cycle <id>` | Filter by cycle ID (e.g. `CYCLE-001`) |
+| `--flow` | Show flow metrics column (cycle time) |
+
+### `vem task unblock` Options
+
+| Option | Description |
+|---|---|
+| `-r, --reasoning <text>` | Reason for unblocking the task |
+| `--actor <name>` | Actor name recorded in the audit log |
+
+### `vem task delete` Options
+
+| Option | Description |
+|---|---|
+| `-r, --reasoning <text>` | Reasoning for deletion |
 
 ### `vem task update <id>` Options
 
@@ -266,10 +314,17 @@ Sensors are custom health checks that run during cycle validation.
 
 ```bash
 vem sensors list                     # List configured sensors
-vem sensors add <name>               # Add a new sensor
+vem sensors add <name> --cmd <command>  # Add a new sensor (--cmd is required)
 vem sensors remove <name>            # Remove a sensor
 vem sensors run [name]               # Run all sensors or a specific one
 ```
+
+### `vem sensors add` Options
+
+| Option | Description |
+|---|---|
+| `--cmd <command>` | **(Required)** Shell command to run as the sensor check |
+| `--description <text>` | Human-readable description of the sensor |
 
 ## Sessions
 
@@ -353,7 +408,7 @@ Used by AI agents inside cloud sandboxes to submit cycle validation reviews.
 > |---|---|
 > | `VEM_TASK_RUN_ID` | The sandbox run ID (required) |
 > | `VEM_API_KEY` | Sandbox API key (required) |
-> | `VEM_API_URL` | API base URL (optional, defaults to `http://localhost:3002`) |
+> | `VEM_API_URL` | API base URL (optional; only needed when self-hosting or developing locally) |
 
 ```bash
 vem review submit --file <path>      # Submit a vem_review JSON block from a file
@@ -381,6 +436,7 @@ vem runner --unsafe                  # Disable Docker sandbox — runs agent dir
 | `copilot` (default) | `GITHUB_TOKEN` or `GH_TOKEN` |
 | `gh` | `GITHUB_TOKEN` or `GH_TOKEN` |
 | `claude` | `ANTHROPIC_API_KEY` |
+| `gemini` | `gemini` CLI tool installed and authenticated |
 | `codex` | `OPENAI_API_KEY` |
 
 The same agent values and credential requirements apply to `vem task iterate --agent`.
@@ -444,9 +500,11 @@ These variables are read by the CLI and runner. Most are optional; they allow op
 | Variable | Description |
 |---|---|
 | `VEM_API_KEY` | Authentication key for the vem API (used by `vem review submit`) |
-| `VEM_API_URL` | Override the vem API base URL (default: `http://localhost:3002`) |
+| `VEM_API_URL` | Override the vem API base URL. Only needed when self-hosting or developing locally. Production builds embed the correct URL automatically. |
 | `VEM_APP_URL` | Override the vem web app base URL |
 | `VEM_TASK_RUN_ID` | Sandbox run ID (required for `vem review submit`) |
+| `VEM_ACTIVE_TASK` | Active task ID for agent session heartbeat tracking |
+| `VEM_CLI_SENTRY_DSN` | Sentry DSN for CLI error reporting; leave unset to disable error monitoring |
 | `VEM_RUNNER_VERBOSE` | Set to `1` to enable verbose runner output |
 | `VEM_DEBUG` | Set to `1` to enable agent debug logging |
 | `VEM_STRICT_MEMORY` | Set to `0` to disable strict memory enforcement after agent runs |
