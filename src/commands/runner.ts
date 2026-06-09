@@ -31,6 +31,8 @@ type ClaimedTaskRun = {
 	run_mode?: string | null;
 	cycle_run_id?: string | null;
 	project_id?: string | null;
+	isolation_sync_strategy?: string | null;
+	isolation_on_conflict?: string | null;
 };
 
 type ClaimedTerminalSession = {
@@ -103,7 +105,7 @@ function commandExists(command: string) {
 	}
 }
 
-const KNOWN_RUNNER_AGENTS = ["copilot", "gh", "claude", "gemini", "codex"] as const;
+const KNOWN_RUNNER_AGENTS = ["copilot", "claude", "gemini", "codex"] as const;
 
 function hasSandboxCredentials(agent: string) {
 	if (agent === "claude") {
@@ -112,7 +114,7 @@ function hasSandboxCredentials(agent: string) {
 			process.env.ANTHROPIC_API_KEY.trim().length > 0
 		);
 	}
-	if (agent === "copilot" || agent === "gh") {
+	if (agent === "copilot") {
 		const envToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 		if (envToken && envToken.trim().length > 0) return true;
 		try {
@@ -207,7 +209,7 @@ function checkDockerAvailable(): void {
 	}
 }
 
-const SANDBOX_IMAGE_NAME = "vem-sandbox:v3";
+const SANDBOX_IMAGE_NAME = "vem-sandbox:v4";
 
 /** Returns the Docker platform string matching the current host architecture. */
 function getHostDockerPlatform(): string {
@@ -298,7 +300,7 @@ function collectSandboxCredentials(agent: string): Record<string, string> {
 			);
 			process.exit(1);
 		}
-	} else if (agent === "copilot" || agent === "gh") {
+	} else if (agent === "copilot") {
 		// Try process.env first, then gh auth token from host
 		const envToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 		if (envToken) {
@@ -1372,13 +1374,142 @@ async function executeClaimedRunInSandbox(input: {
 		// may not include them. Without this sync, the pre-computed baseHash (from
 		// `git rev-parse remote/branch`) would reference a commit unknown to the clone,
 		// causing `rev-list baseHash..HEAD` to throw → commitHashes stays empty.
+		let remoteSyncSucceeded = false;
 		try {
 			runGitIn(worktreePath, ["fetch", "origin", baseBranch]);
 			runGitIn(worktreePath, ["reset", "--hard", `origin/${baseBranch}`]);
 			// Recompute baseHash from the clone's actual HEAD after sync so rev-list works
 			baseHash = runGitIn(worktreePath, ["rev-parse", "HEAD"]);
+			remoteSyncSucceeded = true;
 		} catch {
 			// Fetch failed (auth, network, or branch not on remote yet); keep pre-computed baseHash
+		}
+
+		// For cycle isolation branches, log merge sync or perform rebase.
+		if (
+			run.agent_base_branch?.startsWith("vem/cycle-") &&
+			run.isolation_sync_strategy
+		) {
+			const strategy = run.isolation_sync_strategy;
+			if (strategy === "merge") {
+				if (remoteSyncSucceeded) {
+					// Verify the default branch HEAD is actually an ancestor of the isolation
+					// branch — confirms the server-side GitHub API merge was applied.
+					let defaultBranch = "main";
+					let ancestorVerified = false;
+					try {
+						try {
+							defaultBranch = runGitIn(worktreePath, [
+								"symbolic-ref",
+								"--short",
+								"refs/remotes/origin/HEAD",
+							])
+								.replace("origin/", "")
+								.trim();
+						} catch {
+							/* fall through — use "main" */
+						}
+						runGitIn(worktreePath, ["fetch", "origin", defaultBranch]);
+						runGitIn(worktreePath, [
+							"merge-base",
+							"--is-ancestor",
+							`origin/${defaultBranch}`,
+							"HEAD",
+						]);
+						ancestorVerified = true;
+					} catch {
+						/* verification failed */
+					}
+
+					if (ancestorVerified) {
+						console.log(
+							chalk.gray(
+								`  Isolation branch synced — origin/${defaultBranch} is merged in`,
+							),
+						);
+					} else {
+						// Server-side merge didn't apply — attempt a local merge as fallback.
+						console.log(
+							chalk.gray(`  Merging origin/${defaultBranch} locally...`),
+						);
+						try {
+							runGitIn(worktreePath, [
+								"merge",
+								`origin/${defaultBranch}`,
+								"--no-edit",
+							]);
+							baseHash = runGitIn(worktreePath, ["rev-parse", "HEAD"]);
+							console.log(
+								chalk.gray(
+									`  Isolation branch synced — merged origin/${defaultBranch} locally`,
+								),
+							);
+						} catch {
+							try {
+								runGitIn(worktreePath, ["merge", "--abort"]);
+							} catch {
+								/* ignore */
+							}
+							if (run.isolation_on_conflict === "abort") {
+								throw new Error(
+									`Merge conflicts with origin/${defaultBranch} — run aborted. Resolve conflicts in the isolation branch before retrying.`,
+								);
+							}
+							console.log(
+								chalk.yellow(
+									`  Merge conflicts — agent will work on un-synced isolation branch`,
+								),
+							);
+						}
+					}
+				} else {
+					console.log(
+						chalk.yellow(
+							`  Warning: could not fetch origin — agent may be running on a stale isolation branch`,
+						),
+					);
+				}
+			} else if (strategy === "rebase") {
+				console.log(
+					chalk.gray(`  Rebasing isolation branch onto default branch...`),
+				);
+				let defaultBranch = "main";
+				try {
+					runGitIn(worktreePath, ["fetch", "origin"]);
+					try {
+						defaultBranch = runGitIn(worktreePath, [
+							"symbolic-ref",
+							"--short",
+							"refs/remotes/origin/HEAD",
+						])
+							.replace("origin/", "")
+							.trim();
+					} catch {
+						// fall through — use "main"
+					}
+					runGitIn(worktreePath, ["rebase", `origin/${defaultBranch}`]);
+					baseHash = runGitIn(worktreePath, ["rev-parse", "HEAD"]);
+					console.log(
+						chalk.gray(`  Rebase onto origin/${defaultBranch} complete`),
+					);
+				} catch {
+					try {
+						runGitIn(worktreePath, ["rebase", "--abort"]);
+					} catch {
+						/* ignore */
+					}
+					if (run.isolation_on_conflict === "abort") {
+						throw new Error(
+							`Rebase conflicts with origin/${defaultBranch} — run aborted. Resolve conflicts in the isolation branch before retrying.`,
+						);
+					}
+					console.log(
+						chalk.yellow(
+							`  Rebase sync failed (conflicts) — validating isolation branch as-is`,
+						),
+					);
+				}
+			}
 		}
 
 		await appendRunLogs(configService, apiKey, run.id, [
@@ -1981,7 +2112,7 @@ export function registerRunnerCommands(program: Command) {
 
 			const pollIntervalMs = Math.max(
 				2_000,
-				Number.parseInt(String(options.pollInterval ?? "10"), 10) * 1000,
+				Number.parseInt(String(options.pollInterval), 10) * 1000,
 			);
 
 			const agent = String(options.agent);

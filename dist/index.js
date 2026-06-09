@@ -29,7 +29,7 @@ import {
   isVemInitialized,
   listAllAgentSessions,
   parseVemUpdateBlock
-} from "./chunk-ELJX7OKV.js";
+} from "./chunk-DFSUNF7J.js";
 import {
   readCopilotSessionDetail
 } from "./chunk-PO3WNPAJ.js";
@@ -1217,7 +1217,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
       await updateTaskMetaRemote(configService, activeTask, {
         raw_vem_update: JSON.parse(JSON.stringify(update)),
-        cli_version: "0.1.85",
+        cli_version: "0.1.95",
         ...changelogEntry ? { changelog_entry: changelogEntry } : {}
       });
     }
@@ -1274,7 +1274,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
       ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
       raw_vem_update: JSON.parse(JSON.stringify(update)),
-      cli_version: "0.1.85",
+      cli_version: "0.1.95",
       // Task memory fields — stored in task_memory_entries on the API side.
       ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
       changelog_entry: changelogReasoning ?? null
@@ -3043,9 +3043,9 @@ function registerCycleCommands(program2) {
       );
     }
   });
-  cycleCmd.command("create [name]").description("Create a new goal cycle").option(
+  cycleCmd.command("create <name>").description("Create a new goal cycle").requiredOption(
     "--goal <text>",
-    "The outcome this cycle is working towards (required)"
+    "The outcome this cycle is working towards"
   ).option(
     "--appetite <size>",
     "Time budget: small (~1w), medium (~2w), large (~4-6w)"
@@ -4433,7 +4433,7 @@ function registerInstructionCommands(program2) {
   constitutionCmd.command("edit").description("Edit the Agent Constitution in your $EDITOR").action(async () => {
     await trackCommandUsage("constitution.edit");
     const { execSync: execSync6 } = await import("child_process");
-    const { getVemDir: getVemDir2 } = await import("./dist-33DSFTS2.js");
+    const { getVemDir: getVemDir2 } = await import("./dist-KZ6JG3S6.js");
     const vemDir = await getVemDir2();
     const constitutionPath = path.join(vemDir, "CONSTITUTION.md");
     const exists = await constitutionService.exists();
@@ -4503,7 +4503,7 @@ function registerMaintenanceCommands(program2) {
     return { configService, apiKey, projectId };
   };
   const decisionCmd = program2.command("decision").description("Manage architectural decisions");
-  decisionCmd.command("add <title>").description("Record an architectural decision").option("--context <text>", "Why this decision was needed").option("--decision <text>", "What was decided").option(
+  decisionCmd.command("add <title>").description("Record an architectural decision").requiredOption("--context <text>", "Why this decision was needed").requiredOption("--decision <text>", "What was decided").option(
     "--tasks <ids>",
     "Comma-separated task IDs (e.g., TASK-001,TASK-002)"
   ).action(
@@ -4695,7 +4695,7 @@ function registerMaintenanceCommands(program2) {
   });
   program2.command("diff").description("Show differences between local and cloud state").option("--detailed", "Show detailed content diffs").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DiffService } = await import("./dist-33DSFTS2.js");
+      const { DiffService } = await import("./dist-KZ6JG3S6.js");
       const diffService = new DiffService();
       const result = await diffService.compareWithLastPush();
       if (options.json) {
@@ -4753,7 +4753,7 @@ ${"\u2500".repeat(50)}`));
   });
   program2.command("doctor").description("Run health checks on VEM setup").option("--json", "Output as JSON").action(async (options) => {
     try {
-      const { DoctorService } = await import("./dist-33DSFTS2.js");
+      const { DoctorService } = await import("./dist-KZ6JG3S6.js");
       const doctorService = new DoctorService();
       const results = await doctorService.runAllChecks();
       if (options.json) {
@@ -4955,12 +4955,7 @@ ${"\u2500".repeat(50)}`));
         );
         console.log(
           chalk11.gray(
-            "  Add '**Enforcement Pattern:** <regex>' to a decision file in .vem/decisions/"
-          )
-        );
-        console.log(
-          chalk11.gray(
-            "  Or use: vem decision add ... --enforcement-pattern <regex>\n"
+            "  Add '**Enforcement Pattern:** <regex>' manually to the relevant decision file in .vem/decisions/\n"
           )
         );
         return;
@@ -6029,12 +6024,12 @@ function commandExists(command) {
     return false;
   }
 }
-var KNOWN_RUNNER_AGENTS = ["copilot", "gh", "claude", "gemini", "codex"];
+var KNOWN_RUNNER_AGENTS = ["copilot", "claude", "gemini", "codex"];
 function hasSandboxCredentials(agent) {
   if (agent === "claude") {
     return typeof process.env.ANTHROPIC_API_KEY === "string" && process.env.ANTHROPIC_API_KEY.trim().length > 0;
   }
-  if (agent === "copilot" || agent === "gh") {
+  if (agent === "copilot") {
     const envToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
     if (envToken && envToken.trim().length > 0) return true;
     try {
@@ -6113,7 +6108,7 @@ function checkDockerAvailable() {
     process.exit(1);
   }
 }
-var SANDBOX_IMAGE_NAME = "vem-sandbox:v3";
+var SANDBOX_IMAGE_NAME = "vem-sandbox:v4";
 function getHostDockerPlatform() {
   return arch() === "arm64" ? "linux/arm64" : "linux/amd64";
 }
@@ -6188,7 +6183,7 @@ function collectSandboxCredentials(agent) {
       );
       process.exit(1);
     }
-  } else if (agent === "copilot" || agent === "gh") {
+  } else if (agent === "copilot") {
     const envToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
     if (envToken) {
       creds.GITHUB_TOKEN = envToken;
@@ -6987,11 +6982,122 @@ async function executeClaimedRunInSandbox(input) {
     if (remoteUrl) {
       runGitIn(worktreePath, ["remote", "set-url", "origin", remoteUrl]);
     }
+    let remoteSyncSucceeded = false;
     try {
       runGitIn(worktreePath, ["fetch", "origin", baseBranch]);
       runGitIn(worktreePath, ["reset", "--hard", `origin/${baseBranch}`]);
       baseHash = runGitIn(worktreePath, ["rev-parse", "HEAD"]);
+      remoteSyncSucceeded = true;
     } catch {
+    }
+    if (run.agent_base_branch?.startsWith("vem/cycle-") && run.isolation_sync_strategy) {
+      const strategy = run.isolation_sync_strategy;
+      if (strategy === "merge") {
+        if (remoteSyncSucceeded) {
+          let defaultBranch = "main";
+          let ancestorVerified = false;
+          try {
+            try {
+              defaultBranch = runGitIn(worktreePath, [
+                "symbolic-ref",
+                "--short",
+                "refs/remotes/origin/HEAD"
+              ]).replace("origin/", "").trim();
+            } catch {
+            }
+            runGitIn(worktreePath, ["fetch", "origin", defaultBranch]);
+            runGitIn(worktreePath, [
+              "merge-base",
+              "--is-ancestor",
+              `origin/${defaultBranch}`,
+              "HEAD"
+            ]);
+            ancestorVerified = true;
+          } catch {
+          }
+          if (ancestorVerified) {
+            console.log(
+              chalk14.gray(
+                `  Isolation branch synced \u2014 origin/${defaultBranch} is merged in`
+              )
+            );
+          } else {
+            console.log(
+              chalk14.gray(`  Merging origin/${defaultBranch} locally...`)
+            );
+            try {
+              runGitIn(worktreePath, [
+                "merge",
+                `origin/${defaultBranch}`,
+                "--no-edit"
+              ]);
+              baseHash = runGitIn(worktreePath, ["rev-parse", "HEAD"]);
+              console.log(
+                chalk14.gray(
+                  `  Isolation branch synced \u2014 merged origin/${defaultBranch} locally`
+                )
+              );
+            } catch {
+              try {
+                runGitIn(worktreePath, ["merge", "--abort"]);
+              } catch {
+              }
+              if (run.isolation_on_conflict === "abort") {
+                throw new Error(
+                  `Merge conflicts with origin/${defaultBranch} \u2014 run aborted. Resolve conflicts in the isolation branch before retrying.`
+                );
+              }
+              console.log(
+                chalk14.yellow(
+                  `  Merge conflicts \u2014 agent will work on un-synced isolation branch`
+                )
+              );
+            }
+          }
+        } else {
+          console.log(
+            chalk14.yellow(
+              `  Warning: could not fetch origin \u2014 agent may be running on a stale isolation branch`
+            )
+          );
+        }
+      } else if (strategy === "rebase") {
+        console.log(
+          chalk14.gray(`  Rebasing isolation branch onto default branch...`)
+        );
+        let defaultBranch = "main";
+        try {
+          runGitIn(worktreePath, ["fetch", "origin"]);
+          try {
+            defaultBranch = runGitIn(worktreePath, [
+              "symbolic-ref",
+              "--short",
+              "refs/remotes/origin/HEAD"
+            ]).replace("origin/", "").trim();
+          } catch {
+          }
+          runGitIn(worktreePath, ["rebase", `origin/${defaultBranch}`]);
+          baseHash = runGitIn(worktreePath, ["rev-parse", "HEAD"]);
+          console.log(
+            chalk14.gray(`  Rebase onto origin/${defaultBranch} complete`)
+          );
+        } catch {
+          try {
+            runGitIn(worktreePath, ["rebase", "--abort"]);
+          } catch {
+          }
+          if (run.isolation_on_conflict === "abort") {
+            throw new Error(
+              `Rebase conflicts with origin/${defaultBranch} \u2014 run aborted. Resolve conflicts in the isolation branch before retrying.`
+            );
+          }
+          console.log(
+            chalk14.yellow(
+              `  Rebase sync failed (conflicts) \u2014 validating isolation branch as-is`
+            )
+          );
+        }
+      }
     }
     await appendRunLogs(configService, apiKey, run.id, [
       {
@@ -7473,7 +7579,7 @@ function registerRunnerCommands(program2) {
     }
     const pollIntervalMs = Math.max(
       2e3,
-      Number.parseInt(String(options.pollInterval ?? "10"), 10) * 1e3
+      Number.parseInt(String(options.pollInterval), 10) * 1e3
     );
     const agent = String(options.agent);
     const optionSource = typeof command.getOptionValueSource === "function" ? command.getOptionValueSource("agent") : void 0;
@@ -8034,7 +8140,24 @@ function registerSessionsCommands(program2) {
   ).action(async (opts) => {
     await trackCommandUsage("sessions.list");
     const gitRoot = opts.all ? void 0 : await getCurrentGitRoot();
-    const sources = opts.source ? opts.source.split(",").map((s) => s.trim()) : void 0;
+    const VALID_SOURCES = ["copilot", "claude", "gemini", "codex"];
+    const sources = opts.source ? (() => {
+      const parsed = opts.source.split(",").map((s) => s.trim());
+      const invalid = parsed.filter(
+        (s) => !VALID_SOURCES.includes(
+          s
+        )
+      );
+      if (invalid.length > 0) {
+        console.error(
+          chalk17.red(
+            `\u2717 Unsupported source(s): ${invalid.join(", ")}. Valid sources: ${VALID_SOURCES.join(", ")}`
+          )
+        );
+        process.exit(1);
+      }
+      return parsed;
+    })() : void 0;
     let sessions = await listAllAgentSessions(gitRoot, sources);
     if (opts.branch) {
       sessions = sessions.filter((s) => s.branch === opts.branch);
@@ -10356,7 +10479,9 @@ function registerTaskCommands(program2) {
       github_issue_number: asFiniteNumber(record.github_issue_number),
       deleted_at: asIsoLikeString(record.deleted_at),
       validation_steps: asStringArray(record.validation_steps),
-      acceptance_criteria: asStringArray(record.acceptance_criteria)
+      acceptance_criteria: asStringArray(record.acceptance_criteria),
+      cycle_id: asTrimmedString3(record.cycle_id),
+      impact_score: asFiniteNumber(record.impact_score)
     };
   };
   const getRemoteTasks = async (options) => {
@@ -10520,6 +10645,9 @@ function registerTaskCommands(program2) {
       if (patch.sessions !== void 0) payload.sessions = patch.sessions;
       if (patch.reasoning !== void 0) payload.reasoning = patch.reasoning;
       if (patch.actor !== void 0) payload.actor = patch.actor;
+      if (patch.cycle_id !== void 0) payload.cycle_id = patch.cycle_id;
+      if (patch.impact_score !== void 0)
+        payload.impact_score = patch.impact_score;
       const response = await fetch(
         `${API_URL}/tasks/${encodeURIComponent(remoteTask.db_id)}/meta`,
         {
@@ -10573,7 +10701,7 @@ function registerTaskCommands(program2) {
       const body = await response.json();
       const externalId = asTrimmedString3(body.task?.external_id);
       if (!externalId) return null;
-      const hasExtendedMetadata = payload.tags !== void 0 || payload.depends_on !== void 0 || payload.blocked_by !== void 0 || payload.recurrence_rule !== void 0 || payload.owner_id !== void 0 || payload.reviewer_id !== void 0 || payload.due_at !== void 0 || payload.validation_steps !== void 0;
+      const hasExtendedMetadata = payload.tags !== void 0 || payload.depends_on !== void 0 || payload.blocked_by !== void 0 || payload.recurrence_rule !== void 0 || payload.owner_id !== void 0 || payload.reviewer_id !== void 0 || payload.due_at !== void 0 || payload.validation_steps !== void 0 || payload.cycle_id !== void 0 || payload.impact_score !== void 0;
       if (hasExtendedMetadata) {
         await updateRemoteTaskMeta(externalId, {
           tags: payload.tags,
@@ -10587,7 +10715,9 @@ function registerTaskCommands(program2) {
           parent_id: payload.parent_id,
           subtask_order: payload.subtask_order,
           due_at: payload.due_at,
-          validation_steps: payload.validation_steps
+          validation_steps: payload.validation_steps,
+          cycle_id: payload.cycle_id,
+          impact_score: payload.impact_score
         });
       }
       return await getRemoteTaskById(externalId) ?? {
@@ -10725,10 +10855,13 @@ function registerTaskCommands(program2) {
     }
     return { kind: "next", value: response.value };
   };
-  taskCmd.command("list").description("List tasks").option("--all", "Include completed tasks").option("--deleted", "Show only deleted tasks").option(
+  taskCmd.command("list").description("List tasks").option("--all", "Show all tasks including completed and deleted").option("--deleted", "Show only deleted tasks").option(
     "--status <status>",
     "Filter by status (todo, ready, in-review, in-progress, blocked, done)"
-  ).option("--done", "Show only completed tasks").option("--cycle <id>", "Filter by cycle ID").option("--flow", "Show flow metrics column (cycle time)").action(async (options) => {
+  ).option("--done", "Show only completed tasks").option("--cycle <id>", "Filter by cycle ID").option(
+    "--flow",
+    "Show 'Cycle' (cycle ID) and 'Score' (impact score) columns"
+  ).action(async (options) => {
     await trackCommandUsage("task list");
     const tasks = await getDisplayTasks({ includeDeleted: true });
     const status = typeof options.status === "string" ? options.status : void 0;
@@ -11497,7 +11630,9 @@ ${currentSummary}
         parent_id: parentInput,
         subtask_order: subtaskOrder,
         due_at: dueAt,
-        validation_steps: validationSteps
+        validation_steps: validationSteps,
+        cycle_id: cycleIdInput,
+        impact_score: impactScoreInput !== void 0 && !Number.isNaN(impactScoreInput) ? impactScoreInput : void 0
       });
       if (remoteTask) {
         const localTask = await taskService.getTask(remoteTask.id);
@@ -11527,6 +11662,8 @@ ${currentSummary}
               task_context_summary: remoteTask.task_context_summary,
               evidence: remoteTask.evidence,
               validation_steps: remoteTask.validation_steps,
+              cycle_id: remoteTask.cycle_id,
+              impact_score: remoteTask.impact_score,
               actor: actorName
             }
           );
@@ -11617,7 +11754,11 @@ ${currentSummary}
         parent_id: options.parent,
         subtask_order: parsedOrder,
         due_at: dueAt,
-        validation_steps: parsedValidation
+        validation_steps: parsedValidation,
+        reasoning: options.reasoning,
+        actor: actorName,
+        cycle_id: cycleIdUpdate,
+        impact_score: impactScoreUpdate !== void 0 && !Number.isNaN(impactScoreUpdate) ? impactScoreUpdate : void 0
       });
       const localTask = await taskService.getTask(id);
       if (localTask) {
@@ -11730,9 +11871,13 @@ ${currentSummary}
       let validatedSteps = parseCommaList(options.validation);
       if (requiredValidation.length > 0 && validatedSteps === void 0) {
         if (!process.stdin.isTTY) {
-          throw new Error(
-            "Validation steps are required. Re-run with --validation in non-interactive mode."
+          console.error(
+            chalk21.red(
+              "Validation steps are required. Re-run with --validation in non-interactive mode."
+            )
           );
+          process.exitCode = 1;
+          return;
         }
         const confirmed = [];
         for (const step of requiredValidation) {
@@ -11819,10 +11964,12 @@ ${currentSummary}
       if (!id) {
         const tasks = await taskService.getTasks();
         const todoTasks = tasks.filter(
-          (t) => t.status === "todo" && !t.deleted_at
+          (t) => (t.status === "todo" || t.status === "ready") && !t.deleted_at
         );
         if (todoTasks.length === 0) {
-          console.error(chalk21.yellow("No tasks in TODO status to start."));
+          console.error(
+            chalk21.yellow("No tasks in TODO or READY status to start.")
+          );
           return;
         }
         const response = await prompts10({
@@ -11935,7 +12082,7 @@ ${currentSummary}
       console.error(chalk21.red(`Failed to start task: ${error.message}`));
     }
   });
-  taskCmd.command("block <id>").description("Mark a task as blocked").option("-r, --reasoning <reasoning>", "Reason for blocking (required)").option("--blocked-by <ids>", "Comma-separated task IDs blocking this task").option("--actor <name>", "Actor name").action(async (id, options) => {
+  taskCmd.command("block <id>").description("Mark a task as blocked").requiredOption("-r, --reasoning <text>", "Reason for blocking").option("--blocked-by <ids>", "Comma-separated task IDs blocking this task").option("--actor <name>", "Actor name").action(async (id, options) => {
     try {
       const [remoteTask] = await getDisplayTasks({
         id,
@@ -11949,14 +12096,6 @@ ${currentSummary}
       }
       if (task.status === "done") {
         console.error(chalk21.red(`Cannot block a completed task.`));
-        return;
-      }
-      if (!options.reasoning) {
-        console.error(
-          chalk21.red(
-            "Reasoning is required when blocking a task. Use -r or --reasoning."
-          )
-        );
         return;
       }
       const actorName = resolveActorName(options.actor);
@@ -12285,14 +12424,20 @@ No agent sessions attached to ${id} yet.`)
           process.exitCode = 1;
           return;
         }
+        const remoteUpdated = await updateRemoteTaskMeta(id, {
+          impact_score: score,
+          reasoning: options.reasoning
+        });
         await taskService.updateTask(id, {
           impact_score: score,
           reasoning: options.reasoning
         });
         console.log(
-          chalk21.green(`
-\u2714 Impact score for ${id} set to ${score}
-`)
+          chalk21.green(
+            `
+\u2714 Impact score for ${id} set to ${score}${remoteUpdated ? " (cloud + local cache)" : " (local cache)"}
+`
+          )
         );
       } else {
         console.log(chalk21.bold(`
@@ -12334,14 +12479,24 @@ No agent sessions attached to ${id} yet.`)
         id = response.value;
       }
       const actorName = resolveActorName(options.actor);
-      await taskService.updateTask(id, {
+      const readyReasoning = options.reasoning || "Marked as refined and ready to start.";
+      const remoteUpdated = await updateRemoteTaskMeta(id, {
         status: "ready",
-        reasoning: options.reasoning || "Marked as refined and ready to start.",
+        reasoning: readyReasoning,
         actor: actorName
       });
-      console.log(chalk21.cyan(`
-\u2714 Task ${id} marked as ready
-`));
+      await taskService.updateTask(id, {
+        status: "ready",
+        reasoning: readyReasoning,
+        actor: actorName
+      });
+      console.log(
+        chalk21.cyan(
+          `
+\u2714 Task ${id} marked as ready${remoteUpdated ? " (cloud + local cache)" : " (local cache)"}
+`
+        )
+      );
     } catch (error) {
       console.error(chalk21.red(`Failed to mark task ready: ${error.message}`));
     }
@@ -12611,11 +12766,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.85",
+  release: "0.1.95",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.85").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.95").addHelpText(
   "after",
   `
 ${chalk22.bold("\n\u26A1 Power Workflows:")}

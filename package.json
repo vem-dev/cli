@@ -1,6 +1,6 @@
 {
 	"name": "@vemdev/cli",
-	"version": "0.1.85",
+	"version": "0.1.95",
 	"description": "Official VEM CLI for project memory workflows.",
 	"type": "module",
 	"license": "MIT",
@@ -22,7 +22,11 @@
 		"README.md",
 		"logo.png",
 		"logo-512.png",
-		"LICENSE"
+		"LICENSE",
+		"Dockerfile.sandbox",
+		"run-task.sh",
+		"docker-entrypoint.sh",
+		"detect-and-install.sh"
 	],
 	"scripts": {
 		"prebuild": "pnpm --filter @vem/schemas build && pnpm --filter @vem/core build",
@@ -30,6 +34,8 @@
 		"dev": "tsup --watch",
 		"start": "node dist/index.js",
 		"test": "vitest",
+		"cli:link": "npm link",
+		"cli:unlink": "npm unlink -g @vemdev/cli",
 		"prepublishOnly": "npm run build"
 	},
 	"dependencies": {

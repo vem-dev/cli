@@ -15,6 +15,7 @@ npm install -g @vemdev/cli
 
 - Node.js 20+
 - A VEM account and API key
+- Docker (required for `vem runner` default sandbox mode; use `--unsafe` to bypass on hosts where Docker is unavailable)
 
 ## Quick Start
 
@@ -32,7 +33,7 @@ vem --help
 - `vem quickstart` Interactive guide to powerful VEM workflows
 - `vem login [key]` Authenticate with your VEM API key
 - `vem logout` Clear local authentication
-- `vem link [projectId]` Link this repository to a VEM project
+- `vem link [projectId]` Link this repository to a VEM project (`--reset` to reset the origin URL)
 - `vem unlink` Unlink this repository from a VEM project
 - `vem status` Show current project status
 - `vem insights` Show detailed usage metrics and workflow insights
@@ -40,7 +41,7 @@ vem --help
 - `vem pull` Pull latest cloud snapshot to local files
 - `vem diff` Show differences between local and cloud state
 - `vem pack` Bundle local memory into a context pack
-- `vem finalize --file <path>` Apply a `vem_update` block from a file or stdin
+- `vem finalize --file <path>` Apply a `vem_update` block from a file or stdin; also accepts piped stdin (e.g. `cat agent-response.md | vem finalize`)
 - `vem task ...` Manage tasks (see [Task Management](#task-management))
 - `vem decision add ...` Record an architectural decision
 - `vem context show|set` Read or update project context
@@ -48,7 +49,21 @@ vem --help
 - `vem ask <question>` Ask questions over project memory
 - `vem summarize` Analyze current git changes and suggest VEM memory updates
 - `vem doctor` Run health checks on VEM setup
-- `vem agent [command]` Run an AI agent session
+- `vem agent [command] [args...]` Run an AI agent session (e.g. `vem agent --task TASK-001 claude`; see [vem agent Options](#vem-agent-command-args-options))
+- `vem runner` Run a paired worker that executes queued task runs (see [Runner](#runner))
+- `vem cycle ...` Manage project cycles/sprints (see [Cycle Management](#cycle-management))
+- `vem plan ...` Manage task plans (see [Plan Management](#plan-management))
+- `vem sessions ...` View agent session history (see [Sessions](#sessions))
+- `vem instructions ...` Manage project AI instructions (see [Instructions](#instructions))
+- `vem constitution ...` Manage the Agent Constitution (see [Constitution](#constitution))
+- `vem skills ...` Manage slash-command skills (see [Skills](#skills))
+- `vem sensors ...` Manage feedback sensors (see [Sensors](#sensors))
+- `vem review ...` Submit cycle validation reviews (see [Review](#review))
+- `vem validation show|edit` Manage validation rules (see [Maintenance](#maintenance))
+- `vem queue` List offline snapshot queue (see [Maintenance](#maintenance))
+- `vem archive` Archive old memory files (see [Maintenance](#maintenance))
+- `vem drift check` Check for architecture drift (see [Maintenance](#maintenance))
+- `vem project open` Open the VEM web app on the project page
 
 ## Task Management
 
@@ -66,7 +81,7 @@ vem task subtasks --parent <id> # Show parent task and its subtasks
 vem task context <id>           # View or update task context
 vem task assign <id> [assignee] # Assign a task to a user
 vem task sessions <id>          # Show all agent sessions attached to a task
-vem task flow [id]              # Show task flow and dependencies
+vem task flow [id]              # Show flow metrics: cycle time, lead time, WIP (project summary when no id given)
 vem task score [id]             # Show or set the impact score (0-100)
 vem task ready [id]             # Mark a task as ready (refined and ready to start)
 vem task iterate <id>           # Iterate on a task that already has a PR
@@ -74,7 +89,15 @@ vem task spec <id>              # View or set acceptance criteria
 vem task update <id> [options]  # Update task metadata (see options below)
 ```
 
+### `vem task assign <id> [assignee]`
+
+> **Interactive mode:** When `assignee` is omitted, the CLI fetches project collaborators and presents an interactive selector if the project is linked to the cloud.
+
+> **Note:** Assignment is written to the local task cache immediately. Run `vem push` to sync the change to the cloud.
+
 ### `vem task add` Options
+
+> **Interactive mode:** When `title` is omitted (`vem task add` with no arguments), the CLI enters an interactive wizard that guides you through setting the title, priority, and optional fields step-by-step.
 
 | Option | Description |
 |---|---|
@@ -101,14 +124,18 @@ vem task update <id> [options]  # Update task metadata (see options below)
 
 | Option | Description |
 |---|---|
-| `--all` | Include completed tasks |
+| `--all` | Show all tasks, including completed and deleted tasks |
 | `--deleted` | Show only deleted tasks |
 | `--status <status>` | Filter by status: `todo`, `ready`, `in-review`, `in-progress`, `blocked`, `done` |
-| `--done` | Show only completed tasks (alias for `--status done`) |
+| `--done` | Show only completed (non-deleted) tasks (alias for `--status done`) |
 | `--cycle <id>` | Filter by cycle ID (e.g. `CYCLE-001`) |
-| `--flow` | Show flow metrics column (cycle time) |
+| `--flow` | Show 'Cycle' (cycle ID) and 'Score' (impact score) columns |
+
+> **Note:** The `in-review` status is not settable via the CLI or MCP tools. It is set automatically by GitHub webhook integration when a PR is opened, or via the web dashboard.
 
 ### `vem task start [id]` Options
+
+> **Interactive mode:** When `id` is omitted, the CLI presents an interactive selector of `todo` and `ready` tasks. This prompt is not available in non-interactive/scripted environments — always provide the task ID explicitly in CI or automation.
 
 | Option | Description |
 |---|---|
@@ -117,6 +144,8 @@ vem task update <id> [options]  # Update task metadata (see options below)
 
 ### `vem task ready [id]` Options
 
+> **Interactive mode:** When `id` is omitted, the CLI presents an interactive selector of `todo` tasks. This prompt is not available in non-interactive/scripted environments — always provide the task ID explicitly in CI or automation.
+
 | Option | Description |
 |---|---|
 | `-r, --reasoning <text>` | Reasoning for marking the task ready |
@@ -124,11 +153,13 @@ vem task update <id> [options]  # Update task metadata (see options below)
 
 ### `vem task done [id]` Options
 
+> **Interactive mode:** When `id` is omitted, the CLI presents an interactive selector of `in-progress` tasks. This prompt is not available in non-interactive/scripted environments — always provide the task ID explicitly in CI or automation.
+
 | Option | Description |
 |---|---|
 | `-e, --evidence <evidence>` | Evidence for completion (file path or command); comma-separated for multiple entries |
 | `-r, --reasoning <text>` | Reasoning for completion |
-| `--validation <steps>` | Comma-separated validation steps completed (required when the task has validation steps defined) |
+| `--validation <steps>` | Comma-separated validation steps completed (required in non-interactive/CI mode when the task has validation steps defined; an interactive prompt is shown when running in a terminal) |
 | `--actor <name>` | Actor name recorded in the audit log |
 | `--context-summary <summary>` | Summary of the task context to preserve after completion |
 
@@ -136,26 +167,50 @@ vem task update <id> [options]  # Update task metadata (see options below)
 
 | Option | Description |
 |---|---|
-| `-r, --reasoning <text>` | Reason for blocking the task |
+| `-r, --reasoning <text>` | **(Required)** Reason for blocking the task |
 | `--blocked-by <ids>` | Comma-separated task IDs that are blocking this task |
 | `--actor <name>` | Actor name recorded in the audit log |
 
 ### `vem task score [id]` Options
+
+When `id` is omitted, displays a table of all active tasks with their current impact scores, highlighting tasks that have not yet been scored. Use `vem task score <id> --set <0-100>` to assign a score to a specific task.
 
 | Option | Description |
 |---|---|
 | `--set <score>` | Set impact score manually (0–100) |
 | `-r, --reasoning <text>` | Reasoning for the score change |
 
+### `vem task flow [id]`
+
+Shows flow metrics for a task or a project-level summary.
+
+**With an ID** (`vem task flow TASK-042`):
+
+| Field | Description |
+|---|---|
+| Lead time | Time from task creation to completion (`created → done`) |
+| Cycle time | Time from task start to completion (`started → done`) |
+| Time in each status | Breakdown of time spent in each status (e.g. `todo`, `in-progress`, `blocked`) |
+
+**Without an ID** (`vem task flow`) — project summary:
+
+| Field | Description |
+|---|---|
+| WIP (active tasks) | Number of tasks currently in progress |
+| Throughput (last 7d) | Tasks completed in the last 7 days |
+| Throughput (last 30d) | Tasks completed in the last 30 days |
+| Avg cycle time | Average time from start to done across all completed tasks |
+| Avg lead time | Average time from creation to done across all completed tasks |
+
 ### `vem task spec <id>` Options
 
 | Option | Description |
 |---|---|
-| `--set <criteria...>` | Set acceptance criteria (replaces all existing criteria) |
+| `--set <criteria...>` | Set acceptance criteria; each criterion is a separate argument (e.g. `--set "Tests pass" "Docs updated"`). Replaces all existing criteria. |
 | `--add <criterion>` | Add a single acceptance criterion |
 | `--clear` | Remove all acceptance criteria |
 
-### `vem task unblock` Options
+### `vem task unblock <id>` Options
 
 | Option | Description |
 |---|---|
@@ -189,6 +244,8 @@ vem task update <id> [options]  # Update task metadata (see options below)
 | `--actor <name>` | Actor name recorded in the audit log |
 | `-r, --reasoning <text>` | Reasoning for the update |
 
+> **Note:** `title`, `priority`, and `description` cannot be changed via this command. Use the web dashboard to update these fields.
+
 ```bash
 # Assign a task to a cycle
 vem task update TASK-042 --cycle CYCLE-001
@@ -202,7 +259,7 @@ vem task update TASK-042 --depends-on TASK-010,TASK-011 --due-at 2025-06-15
 
 ### `vem task iterate <id>` Options
 
-Continues work on a task that already has an open PR by pushing additional commits to the existing PR branch.
+Starts an iterative agent run on a task that already has a PR. The agent continues from the existing PR branch and a new PR is opened with cumulative changes.
 
 | Option | Description |
 |---|---|
@@ -211,20 +268,36 @@ Continues work on a task that already has an open PR by pushing additional commi
 | `--agent <name>` | Agent to use: `copilot` (default), `claude`, `gemini`, or `codex` |
 | `--cloud` | Dispatch as a cloud run (`sandbox_job`) — requires Ultra plan |
 
+### `vem task context <id>` Options
+
+| Option | Description |
+|---|---|
+| `--set <text>` | Replace task context |
+| `--append <text>` | Append to task context |
+| `--clear` | Clear task context |
+
 ## Cycle Management
 
 Cycles are fixed-time project scopes (like sprints or Shape Up cycles).
 
 ```bash
 vem cycle list                                                      # List all cycles
-vem cycle create <name> --goal <text> [--appetite small|medium|large] [--start-at <iso>]  # Create a new cycle
+vem cycle create <name> --goal <text> [--appetite small|medium|large] [--start-at <iso>]  # Create a new cycle (both <name> and --goal are required and enforced by the CLI argument parser)
 vem cycle start <id>                                                # Start a planned cycle
 vem cycle close <id>                 # Close an active cycle
-vem cycle focus [id]                 # Focus on a cycle (set as current)
+vem cycle focus [id]                 # Show focused view: active cycle goal + its tasks (defaults to active cycle)
 vem cycle validate <id>              # Validate cycle criteria and run sensors
 vem cycle health [id]                # Show health metrics for a cycle
 vem cycle retrospective <id>         # Generate a cycle retrospective report
 ```
+
+### `vem cycle create` Options
+
+| Option | Description |
+|---|---|
+| `--goal <text>` | (Required) Goal statement for the cycle |
+| `--appetite <size>` | Time budget: `small`, `medium`, or `large` |
+| `--start-at <iso>` | Start date as ISO string (e.g. `2025-06-01`) |
 
 ### `vem cycle close` Options
 
@@ -252,10 +325,18 @@ vem plan list --status <status>      # Filter by status: pending|approved|reject
 vem plan list --json                 # Output as JSON
 vem plan get <plan-id>               # Show details of a specific plan
 vem plan get <plan-id> --json        # Output as JSON
-vem plan create --title "My plan title" [--body <text>] [--file <path>]  # Create a new plan
+vem plan create --title "My plan title" [--body <text>] [--file <path>]  # Create a new plan (--title is required)
 vem plan run-tasks <plan-id>         # Execute queued tasks for a plan
 vem plan cancel-tasks <plan-id>      # Cancel running tasks for a plan
 ```
+
+### `vem plan create` Options
+
+| Option | Description |
+|---|---|
+| `--title <title>` | **(Required)** Plan title |
+| `--body <text>` | Plan body / description |
+| `--file <path>` | Read plan body from a file |
 
 ### `vem plan run-tasks <plan-id>` Options
 
@@ -273,7 +354,7 @@ vem plan cancel-tasks <plan-id>      # Cancel running tasks for a plan
 
 ## Instructions
 
-Manage agent instruction sets (`.vem/instructions/`) and the project constitution.
+Manage agent instruction sets (`.vem/instructions/`). `vem instr` is a short alias for `vem instructions`.
 
 ```bash
 vem instructions pull                # Pull instructions from the cloud
@@ -284,11 +365,6 @@ vem instructions status              # Compare local vs cloud instructions
 vem instructions versions            # List instruction version history
 vem instructions versions -n <n>     # Limit to n versions (default: 20)
 vem instructions revert <versionId>  # Revert instructions to a previous version
-
-vem instructions constitution show   # Show the project constitution
-vem instructions constitution init   # Initialize a constitution file
-vem instructions constitution edit   # Edit the constitution in $EDITOR
-vem instructions constitution set    # Set the constitution from stdin or --file
 ```
 
 ### `vem instructions pull` Options
@@ -308,6 +384,24 @@ vem instructions constitution set    # Set the constitution from stdin or --file
 | Option | Description |
 |---|---|
 | `-n, --limit <n>` | Maximum number of versions to show (default: 20) |
+
+## Constitution
+
+Manage the Agent Constitution — immutable principles for all AI agents in the project.
+
+```bash
+vem constitution show                # Show the project constitution
+vem constitution init                # Initialize a constitution file
+vem constitution edit                # Edit the constitution in $EDITOR
+vem constitution set                 # Set the constitution from stdin
+vem constitution set --file <path>   # Set the constitution from a file
+```
+
+### `vem constitution set` Options
+
+| Option | Description |
+|---|---|
+| `--file <path>` | Read constitution from a file instead of stdin |
 
 ## Skills
 
@@ -329,6 +423,7 @@ vem skills status                    # Compare local skills with the cloud snaps
 vem skills versions                  # List skills version history from the cloud
 vem skills versions -n <n>           # Limit to n versions (default: 20)
 vem skills verify                    # Verify installed skills integrity
+vem skills verify --fix              # Update checksums after manual review
 ```
 
 ### `vem skills add/remove/update` Options
@@ -392,6 +487,7 @@ vem sessions import <id>             # Import a session into local memory
 | `-n, --limit <number>` | Number of sessions to show (default: 20) |
 | `-b, --branch <branch>` | Filter sessions by branch name |
 | `--all` | Show sessions from all repositories (not just the current repo) |
+| `--source <sources>` | Comma-separated sources to include: `copilot`, `claude`, `gemini`. Only these three agents produce local session files; `codex`, `cursor`, and `code` do not store local sessions. |
 
 ## Project
 
@@ -407,8 +503,16 @@ vem project open [projectId]         # Open the VEM web app on the project page
 vem context show                     # Show project context and current state
 vem context set --current-state "..." # Update current state
 vem context set --context "..."       # Update full CONTEXT.md content
-vem decision add "Title" --context "Why" --decision "What was decided"
+vem decision add "Title" --context "Why" --decision "What was decided" --tasks TASK-001,TASK-002
 ```
+
+### `vem decision add` Options
+
+| Option | Description |
+|---|---|
+| `--context <text>` | **(Required)** Context explaining why the decision was made |
+| `--decision <text>` | **(Required)** The decision that was made |
+| `--tasks <ids>` | Comma-separated task IDs related to this decision |
 
 ### Sync
 
@@ -417,18 +521,51 @@ vem push                             # Push local memory to cloud
 vem push --dry-run                   # Preview what would be pushed without actually pushing
 vem push --force                     # Push even if no changes detected
 vem pull                             # Pull latest cloud snapshot
+vem pull --force                     # Overwrite local changes without warning
 vem diff                             # Show local vs cloud differences
+vem diff --detailed                  # Show detailed content diffs
+vem diff --json                      # Output as JSON
 vem summarize                        # AI-suggested memory updates based on git diff
+vem summarize --staged               # Analyze only staged changes
 vem queue                            # List offline snapshot queue
 vem queue --retry                    # Retry pushing all queued snapshots
 vem queue --clear                    # Clear the offline queue
 vem archive                          # Archive old memory files (decisions, changelog, tasks)
+vem archive --all                    # Archive decisions, changelog, and tasks in one pass
 vem archive --decisions              # Archive decisions only
 vem archive --changelog              # Archive changelog only
 vem archive --tasks                  # Archive completed tasks only
 vem archive --older-than 60          # Archive items older than 60 days
 vem archive --keep 10                # Keep at least 10 recent items
 ```
+
+### `vem push` Options
+
+| Option | Description |
+|---|---|
+| `--dry-run` | Preview what would be pushed without actually pushing |
+| `--force` | Push even if no changes detected |
+
+### `vem pull` Options
+
+| Option | Description |
+|---|---|
+| `-f, --force` | Overwrite local changes without warning |
+
+### `vem diff` Options
+
+> **Note:** `vem diff` works without running `vem init` first — it can be used on any directory to compare local files against the cloud state.
+
+| Option | Description |
+|---|---|
+| `--detailed` | Show detailed content diffs |
+| `--json` | Output as JSON |
+
+### `vem summarize` Options
+
+| Option | Description |
+|---|---|
+| `--staged` | Analyze only staged changes |
 
 ### Validation Rules
 
@@ -458,6 +595,7 @@ Used by AI agents inside cloud sandboxes to submit cycle validation reviews.
 > | `VEM_API_URL` | API base URL (optional; only needed when self-hosting or developing locally) |
 
 ```bash
+vem review submit -f <path>          # Submit a vem_review JSON block from a file
 vem review submit --file <path>      # Submit a vem_review JSON block from a file
 cat review.json | vem review submit  # Submit a vem_review JSON block from stdin
 ```
@@ -471,7 +609,7 @@ Runs a paired worker that executes queued web task runs. Intended for CI/CD or l
 ```bash
 vem runner                           # Start the runner (polls for queued tasks)
 vem runner --once                    # Claim at most one run and exit
-vem runner --poll-interval <seconds> # Set polling interval (default: 3s)
+vem runner --poll-interval <seconds> # Set polling interval (default: 3s, minimum: 2s)
 vem runner --agent <name>            # Agent to use (default: copilot)
 vem runner --unsafe                  # Disable Docker sandbox — runs agent directly on host with NO isolation
 ```
@@ -481,14 +619,19 @@ vem runner --unsafe                  # Disable Docker sandbox — runs agent dir
 | Agent | Credential Required |
 |---|---|
 | `copilot` (default) | `GITHUB_TOKEN` or `GH_TOKEN` |
-| `gh` | `GITHUB_TOKEN` or `GH_TOKEN` |
 | `claude` | `ANTHROPIC_API_KEY` |
 | `gemini` | `gemini` CLI tool installed and authenticated |
 | `codex` | `OPENAI_API_KEY` |
 
-The same agent values and credential requirements apply to `vem task iterate --agent`.
+> **Note:** `cursor` and `code` (IDE-based agents) are **not supported** in headless runner mode. They require a running desktop environment and cannot operate inside Docker-sandboxed runner sessions.
+
+For `vem task iterate --agent`, only `copilot`, `claude`, `gemini`, and `codex` are supported. `cursor` and `code` are interactive-only and apply exclusively to `vem agent`.
 
 > **Security note:** `--unsafe` removes all container sandboxing. The agent process runs directly on the host with full filesystem and network access. Only use this flag in trusted, isolated environments where Docker is unavailable. In CI or on shared machines, omit `--unsafe` to keep the default Docker sandbox isolation.
+
+### Runner `.env` Auto-loading
+
+If a `.env` file exists in the current working directory, `vem runner` loads it automatically at startup. You can place `VEM_API_KEY`, agent credentials (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `OPENAI_API_KEY`, etc.), and other runner variables (e.g. `VEM_RUNNER_VERBOSE`) there without exporting them in your shell.
 
 ## Typical Workflows
 
@@ -518,17 +661,49 @@ vem pull
 vem diff
 vem search "webhook retries"
 vem ask "What changed in task handling this week?"
+vem ask "What changed in task handling this week?" --path src/webhooks
 ```
+
+### `vem ask` Options
+
+| Option | Description |
+|---|---|
+| `-p, --path <path>` | Limit results to a file path or directory |
 
 ### Agent-Assisted Workflow
 
 ```bash
-vem pack
-vem agent --task TASK-001
-vem agent --task TASK-001 --no-strict-memory   # Disable strict memory enforcement after agent runs
-vem agent --task TASK-001 --auto-exit          # Automatically exit after agent finishes, skipping post-run prompts
+vem pack                             # Bundle local memory into a context pack
+vem pack --full                      # Include full snapshot content (default is compact)
+vem pack --json                      # Output raw JSON instead of a fenced block
+vem agent claude --task TASK-001
+vem agent claude --task TASK-001 --no-strict-memory   # Disable strict memory enforcement after agent runs
+vem agent claude --task TASK-001 --auto-exit          # Automatically exit after agent finishes, skipping post-run prompts
 vem finalize --file ./agent-response.md
 ```
+
+> **Sandbox mode:** When `VEM_TASK_RUN_ID` and `VEM_API_KEY` are set, `vem finalize` skips local file writes and submits the update directly to the VEM API. This is the mode used inside cloud sandbox agent runs.
+
+> **Note:** Omitting the agent name (e.g. `vem agent --task TASK-001`) triggers an interactive selection prompt listing the AI agents detected on your system. This prompt is not available in non-interactive / scripted environments — always specify an agent name explicitly in CI or automation.
+
+### `vem agent [command] [args...]` Options
+
+| Option | Description |
+|---|---|
+| `-t, --task <taskId>` | Task to work on (e.g. `TASK-001`) |
+| `--no-strict-memory` | Disable strict memory enforcement after agent runs |
+| `--auto-exit` | Automatically exit after agent finishes, skipping post-run prompts |
+
+### `vem agent` Agent Values
+
+| Agent | Prerequisite |
+|---|---|
+| `copilot` | `GITHUB_TOKEN` or `GH_TOKEN` |
+| `claude` | `ANTHROPIC_API_KEY` |
+| `gemini` | `gemini` CLI tool installed and authenticated |
+| `codex` | `OPENAI_API_KEY` |
+| `cursor` | Cursor IDE installed (`cursor` CLI available in `PATH`) |
+| `code` | VS Code installed (`code` CLI available in `PATH`) |
 
 ## Troubleshooting
 
@@ -540,13 +715,23 @@ vem insights            # Show usage metrics and workflow insights
 vem insights --json     # Output metrics as JSON
 ```
 
+### `vem doctor` Exit Codes
+
+| Exit Code | Meaning |
+|---|---|
+| `0` | All checks passed — environment is healthy |
+| `1` | One or more warnings (non-fatal; safe to continue, but worth investigating) |
+| `2` | One or more failures (blocking; environment is misconfigured or missing required dependencies) |
+
+CI pipelines can branch on severity: treat exit 1 as advisory and exit 2 as a hard stop.
+
 ## Environment Variables
 
 These variables are read by the CLI and runner. Most are optional; they allow operators and CI/CD environments to configure behaviour without passing flags on every invocation.
 
 | Variable | Description |
 |---|---|
-| `VEM_API_KEY` | Authentication key for the vem API (used by `vem review submit`) |
+| `VEM_API_KEY` | Authentication key for the vem API. Acts as a fallback for all authenticated CLI commands (overrides the stored login key). Also required for `vem review submit` inside sandbox containers. |
 | `VEM_API_URL` | Override the vem API base URL. Only needed when self-hosting or developing locally. Production builds embed the correct URL automatically. |
 | `VEM_APP_URL` | Override the vem web app base URL |
 | `VEM_TASK_RUN_ID` | Sandbox run ID (required for `vem review submit`) |
@@ -554,9 +739,9 @@ These variables are read by the CLI and runner. Most are optional; they allow op
 | `VEM_CLI_SENTRY_DSN` | Sentry DSN for CLI error reporting; leave unset to disable error monitoring |
 | `VEM_RUNNER_VERBOSE` | Set to `1` to enable verbose runner output |
 | `VEM_DEBUG` | Set to `1` to enable agent debug logging |
-| `VEM_STRICT_MEMORY` | Set to `0` to disable strict memory enforcement after agent runs |
+| `VEM_STRICT_MEMORY` | Set to `0` to disable strict memory enforcement after agent runs. When enabled (the default), the agent is required to produce a `vem_update` block with updated context and task evidence; omitting it causes the run to fail with an error. |
 | `VEM_RUNNER_INSTRUCTIONS` | Extra instructions injected into the runner agent prompt |
-| `VEM_RUN_MODE` | Run mode selection (`implement`, `review`, `plan_creation`) |
+| `VEM_RUN_MODE` | Run mode selection: `implement` (default) — run the normal coding agent; `review` — switch to a code-review-only prompt; `plan_creation` — generate a structured task plan and disable strict memory enforcement. Set automatically by `vem runner` from the task run record — rarely needs to be set manually. |
 | `SANDBOX_AGENT_TIMEOUT_SECONDS` | Timeout in seconds for sandboxed agent execution |
 | `VEM_ACTOR` | Actor name recorded in audit logs |
 | `VEM_AGENT_NAME` | Agent session tracking name |
@@ -564,6 +749,9 @@ These variables are read by the CLI and runner. Most are optional; they allow op
 | `VEM_CHILD_TASK_IDS` | Comma-separated child task IDs (set automatically during nested runs) |
 | `GIT_AUTHOR_NAME` | Git author name passed into Docker sandbox git config |
 | `GIT_AUTHOR_EMAIL` | Git author email passed into Docker sandbox git config |
+| `GITHUB_TOKEN` / `GH_TOKEN` | Required by the `copilot` agent for `vem agent` and `vem runner`. Either variable is accepted; `GH_TOKEN` is used as a fallback. |
+| `ANTHROPIC_API_KEY` | Required by the `claude` agent for `vem agent` and `vem runner`. |
+| `OPENAI_API_KEY` | Required by the `codex` agent for `vem agent` and `vem runner`. |
 
 ## License
 

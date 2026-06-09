@@ -515,11 +515,11 @@ export function registerCycleCommands(program: Command) {
 		});
 
 	cycleCmd
-		.command("create [name]")
+		.command("create <name>")
 		.description("Create a new goal cycle")
-		.option(
+		.requiredOption(
 			"--goal <text>",
-			"The outcome this cycle is working towards (required)",
+			"The outcome this cycle is working towards",
 		)
 		.option(
 			"--appetite <size>",

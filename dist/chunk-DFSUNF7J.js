@@ -16549,20 +16549,36 @@ function sanitizeError(err) {
     };
   }
   const rawMessage = String(err.message || err);
-  if (rawMessage.toLowerCase().includes("unique constraint") || rawMessage.toLowerCase().includes("unique_repo_url_idx") || rawMessage.includes("23505")) {
+  const lowerMessage = rawMessage.toLowerCase();
+  if (lowerMessage.includes("unique constraint") || lowerMessage.includes("unique_repo_url_idx") || rawMessage.includes("23505")) {
     const code2 = "ERR_CONFLICT_001";
     console.error(`[ERR ${correlationId}] ${code2}`, rawMessage);
     return { message: ERROR_CODES[code2], status: 409, code: code2, correlationId };
   }
-  if (rawMessage.toLowerCase().includes("insert into") || rawMessage.toLowerCase().includes("update ") || rawMessage.toLowerCase().includes("delete from") || rawMessage.toLowerCase().includes("select ") || rawMessage.toLowerCase().includes("postgreserror") || rawMessage.toLowerCase().includes("violates foreign key constraint") || rawMessage.toLowerCase().includes("foreign key") || rawMessage.includes("23503")) {
+  if (lowerMessage.includes("insert into") || lowerMessage.includes("update ") || lowerMessage.includes("delete from") || lowerMessage.includes("select ") || lowerMessage.includes("postgreserror") || lowerMessage.includes("violates foreign key constraint") || lowerMessage.includes("foreign key") || rawMessage.includes("23503")) {
     const code2 = "ERR_DB_001";
     console.error(`[ERR ${correlationId}] ${code2}`, rawMessage);
     return { message: ERROR_CODES[code2], status, code: code2, correlationId };
   }
-  if (rawMessage.length <= 300 && !rawMessage.includes("\n") && !rawMessage.includes("Error:")) {
-    const code2 = "ERR_INTERNAL_001";
+  if (status === 404 || status === 451 || lowerMessage.includes("not found") || lowerMessage.includes("repository not found") || lowerMessage.includes("resource not accessible")) {
+    const code2 = "ERR_REPO_001";
     console.error(`[ERR ${correlationId}] ${code2}`, rawMessage);
-    return { message: rawMessage, status, code: code2, correlationId };
+    return { message: ERROR_CODES[code2], status: 404, code: code2, correlationId };
+  }
+  if (lowerMessage.includes("repository is empty") || lowerMessage.includes("git repository is empty") || lowerMessage.includes("this repository is empty")) {
+    const code2 = "ERR_REPO_002";
+    console.error(`[ERR ${correlationId}] ${code2}`, rawMessage);
+    return { message: ERROR_CODES[code2], status: 422, code: code2, correlationId };
+  }
+  if (lowerMessage.includes("locked and cannot be indexed")) {
+    const code2 = "ERR_INDEX_001";
+    console.error(`[ERR ${correlationId}] ${code2}`, rawMessage);
+    return { message: ERROR_CODES[code2], status: 429, code: code2, correlationId };
+  }
+  if (lowerMessage.includes("at capacity")) {
+    const code2 = "ERR_INDEX_002";
+    console.error(`[ERR ${correlationId}] ${code2}`, rawMessage);
+    return { message: ERROR_CODES[code2], status: 429, code: code2, correlationId };
   }
   const code = "ERR_INTERNAL_001";
   console.error(`[ERR ${correlationId}] ${code}`, rawMessage);
@@ -18224,4 +18240,4 @@ export {
   WebhookService,
   WorkflowGuideService
 };
-//# sourceMappingURL=chunk-ELJX7OKV.js.map
+//# sourceMappingURL=chunk-DFSUNF7J.js.map

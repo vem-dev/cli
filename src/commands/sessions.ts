@@ -57,12 +57,28 @@ export function registerSessionsCommands(program: Command) {
 			await trackCommandUsage("sessions.list");
 
 			const gitRoot = opts.all ? undefined : await getCurrentGitRoot();
+			const VALID_SOURCES = ["copilot", "claude", "gemini", "codex"] as const;
 			const sources = opts.source
-				? (opts.source.split(",").map((s: string) => s.trim()) as (
-						| "copilot"
-						| "claude"
-						| "gemini"
-					)[])
+				? (() => {
+						const parsed = opts.source
+							.split(",")
+							.map((s: string) => s.trim());
+						const invalid = parsed.filter(
+							(s: string) =>
+								!VALID_SOURCES.includes(
+									s as (typeof VALID_SOURCES)[number],
+								),
+						);
+						if (invalid.length > 0) {
+							console.error(
+								chalk.red(
+									`✗ Unsupported source(s): ${invalid.join(", ")}. Valid sources: ${VALID_SOURCES.join(", ")}`,
+								),
+							);
+							process.exit(1);
+						}
+						return parsed as (typeof VALID_SOURCES)[number][];
+					})()
 				: undefined;
 
 			let sessions = await listAllAgentSessions(gitRoot, sources);

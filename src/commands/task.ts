@@ -201,6 +201,8 @@ export function registerTaskCommands(program: Command) {
 			deleted_at: asIsoLikeString(record.deleted_at),
 			validation_steps: asStringArray(record.validation_steps),
 			acceptance_criteria: asStringArray(record.acceptance_criteria),
+			cycle_id: asTrimmedString(record.cycle_id),
+			impact_score: asFiniteNumber(record.impact_score),
 		};
 	};
 
@@ -373,6 +375,8 @@ export function registerTaskCommands(program: Command) {
 			deleted_at?: string;
 			reasoning?: string;
 			actor?: string;
+			cycle_id?: string;
+			impact_score?: number;
 		},
 	): Promise<boolean> => {
 		try {
@@ -436,6 +440,9 @@ export function registerTaskCommands(program: Command) {
 			if (patch.sessions !== undefined) payload.sessions = patch.sessions;
 			if (patch.reasoning !== undefined) payload.reasoning = patch.reasoning;
 			if (patch.actor !== undefined) payload.actor = patch.actor;
+			if (patch.cycle_id !== undefined) payload.cycle_id = patch.cycle_id;
+			if (patch.impact_score !== undefined)
+				payload.impact_score = patch.impact_score;
 
 			const response = await fetch(
 				`${API_URL}/tasks/${encodeURIComponent(remoteTask.db_id)}/meta`,
@@ -472,6 +479,8 @@ export function registerTaskCommands(program: Command) {
 		subtask_order?: number;
 		due_at?: string;
 		validation_steps?: string[];
+		cycle_id?: string;
+		impact_score?: number;
 	}): Promise<DisplayTask | null> => {
 		try {
 			const auth = await resolveRemoteProjectAuth();
@@ -522,7 +531,9 @@ export function registerTaskCommands(program: Command) {
 				payload.owner_id !== undefined ||
 				payload.reviewer_id !== undefined ||
 				payload.due_at !== undefined ||
-				payload.validation_steps !== undefined;
+				payload.validation_steps !== undefined ||
+				payload.cycle_id !== undefined ||
+				payload.impact_score !== undefined;
 			if (hasExtendedMetadata) {
 				await updateRemoteTaskMeta(externalId, {
 					tags: payload.tags,
@@ -537,6 +548,8 @@ export function registerTaskCommands(program: Command) {
 					subtask_order: payload.subtask_order,
 					due_at: payload.due_at,
 					validation_steps: payload.validation_steps,
+					cycle_id: payload.cycle_id,
+					impact_score: payload.impact_score,
 				});
 			}
 
@@ -727,7 +740,7 @@ export function registerTaskCommands(program: Command) {
 	taskCmd
 		.command("list")
 		.description("List tasks")
-		.option("--all", "Include completed tasks")
+		.option("--all", "Show all tasks including completed and deleted")
 		.option("--deleted", "Show only deleted tasks")
 		.option(
 			"--status <status>",
@@ -735,7 +748,10 @@ export function registerTaskCommands(program: Command) {
 		)
 		.option("--done", "Show only completed tasks")
 		.option("--cycle <id>", "Filter by cycle ID")
-		.option("--flow", "Show flow metrics column (cycle time)")
+		.option(
+			"--flow",
+			"Show 'Cycle' (cycle ID) and 'Score' (impact score) columns",
+		)
 		.action(async (options) => {
 			await trackCommandUsage("task list");
 			const tasks = await getDisplayTasks({ includeDeleted: true });
@@ -1728,6 +1744,11 @@ export function registerTaskCommands(program: Command) {
 					subtask_order: subtaskOrder,
 					due_at: dueAt,
 					validation_steps: validationSteps,
+					cycle_id: cycleIdInput,
+					impact_score:
+						impactScoreInput !== undefined && !Number.isNaN(impactScoreInput)
+							? impactScoreInput
+							: undefined,
 				});
 
 				if (remoteTask) {
@@ -1763,6 +1784,8 @@ export function registerTaskCommands(program: Command) {
 								task_context_summary: remoteTask.task_context_summary,
 								evidence: remoteTask.evidence,
 								validation_steps: remoteTask.validation_steps,
+								cycle_id: remoteTask.cycle_id,
+								impact_score: remoteTask.impact_score,
 								actor: actorName,
 							},
 						);
@@ -1891,6 +1914,13 @@ export function registerTaskCommands(program: Command) {
 					subtask_order: parsedOrder,
 					due_at: dueAt,
 					validation_steps: parsedValidation,
+					reasoning: options.reasoning,
+					actor: actorName,
+					cycle_id: cycleIdUpdate,
+					impact_score:
+						impactScoreUpdate !== undefined && !Number.isNaN(impactScoreUpdate)
+							? impactScoreUpdate
+							: undefined,
 				});
 
 				const localTask = await taskService.getTask(id);
@@ -2024,9 +2054,13 @@ export function registerTaskCommands(program: Command) {
 				let validatedSteps = parseCommaList(options.validation);
 				if (requiredValidation.length > 0 && validatedSteps === undefined) {
 					if (!process.stdin.isTTY) {
-						throw new Error(
-							"Validation steps are required. Re-run with --validation in non-interactive mode.",
+						console.error(
+							chalk.red(
+								"Validation steps are required. Re-run with --validation in non-interactive mode.",
+							),
 						);
+						process.exitCode = 1;
+						return;
 					}
 					const confirmed: string[] = [];
 					for (const step of requiredValidation) {
@@ -2121,11 +2155,14 @@ export function registerTaskCommands(program: Command) {
 				if (!id) {
 					const tasks = await taskService.getTasks();
 					const todoTasks = tasks.filter(
-						(t) => t.status === "todo" && !t.deleted_at,
+						(t) =>
+							(t.status === "todo" || t.status === "ready") && !t.deleted_at,
 					);
 
 					if (todoTasks.length === 0) {
-						console.error(chalk.yellow("No tasks in TODO status to start."));
+						console.error(
+							chalk.yellow("No tasks in TODO or READY status to start."),
+						);
 						return;
 					}
 
@@ -2256,7 +2293,7 @@ export function registerTaskCommands(program: Command) {
 	taskCmd
 		.command("block <id>")
 		.description("Mark a task as blocked")
-		.option("-r, --reasoning <reasoning>", "Reason for blocking (required)")
+		.requiredOption("-r, --reasoning <text>", "Reason for blocking")
 		.option("--blocked-by <ids>", "Comma-separated task IDs blocking this task")
 		.option("--actor <name>", "Actor name")
 		.action(async (id, options) => {
@@ -2274,15 +2311,6 @@ export function registerTaskCommands(program: Command) {
 
 				if (task.status === "done") {
 					console.error(chalk.red(`Cannot block a completed task.`));
-					return;
-				}
-
-				if (!options.reasoning) {
-					console.error(
-						chalk.red(
-							"Reasoning is required when blocking a task. Use -r or --reasoning.",
-						),
-					);
 					return;
 				}
 
@@ -2646,12 +2674,18 @@ export function registerTaskCommands(program: Command) {
 						process.exitCode = 1;
 						return;
 					}
+					const remoteUpdated = await updateRemoteTaskMeta(id, {
+						impact_score: score,
+						reasoning: options.reasoning,
+					});
 					await taskService.updateTask(id, {
 						impact_score: score,
 						reasoning: options.reasoning,
 					});
 					console.log(
-						chalk.green(`\n✔ Impact score for ${id} set to ${score}\n`),
+						chalk.green(
+							`\n✔ Impact score for ${id} set to ${score}${remoteUpdated ? " (cloud + local cache)" : " (local cache)"}\n`,
+						),
 					);
 				} else {
 					console.log(chalk.bold(`\n🎯  ${id}: ${task.title}`));
@@ -2697,13 +2731,23 @@ export function registerTaskCommands(program: Command) {
 					id = response.value as string;
 				}
 				const actorName = resolveActorName(options.actor);
-				await taskService.updateTask(id, {
+				const readyReasoning =
+					options.reasoning || "Marked as refined and ready to start.";
+				const remoteUpdated = await updateRemoteTaskMeta(id, {
 					status: "ready",
-					reasoning:
-						options.reasoning || "Marked as refined and ready to start.",
+					reasoning: readyReasoning,
 					actor: actorName,
 				});
-				console.log(chalk.cyan(`\n✔ Task ${id} marked as ready\n`));
+				await taskService.updateTask(id, {
+					status: "ready",
+					reasoning: readyReasoning,
+					actor: actorName,
+				});
+				console.log(
+					chalk.cyan(
+						`\n✔ Task ${id} marked as ready${remoteUpdated ? " (cloud + local cache)" : " (local cache)"}\n`,
+					),
+				);
 			} catch (error: any) {
 				console.error(chalk.red(`Failed to mark task ready: ${error.message}`));
 			}

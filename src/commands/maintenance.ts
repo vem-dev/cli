@@ -55,8 +55,8 @@ export function registerMaintenanceCommands(program: Command) {
 	decisionCmd
 		.command("add <title>")
 		.description("Record an architectural decision")
-		.option("--context <text>", "Why this decision was needed")
-		.option("--decision <text>", "What was decided")
+		.requiredOption("--context <text>", "Why this decision was needed")
+		.requiredOption("--decision <text>", "What was decided")
 		.option(
 			"--tasks <ids>",
 			"Comma-separated task IDs (e.g., TASK-001,TASK-002)",
@@ -622,12 +622,7 @@ export function registerMaintenanceCommands(program: Command) {
 					);
 					console.log(
 						chalk.gray(
-							"  Add '**Enforcement Pattern:** <regex>' to a decision file in .vem/decisions/",
-						),
-					);
-					console.log(
-						chalk.gray(
-							"  Or use: vem decision add ... --enforcement-pattern <regex>\n",
+							"  Add '**Enforcement Pattern:** <regex>' manually to the relevant decision file in .vem/decisions/\n",
 						),
 					);
 					return;
