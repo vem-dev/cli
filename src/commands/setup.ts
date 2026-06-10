@@ -55,7 +55,7 @@ const VEM_AGENT_ENFORCEMENT_BLOCK = `${VEM_AGENT_ENFORCEMENT_MARKER}
 All AI agents in this repository must use \`vem\` and follow the working rules.
 
 1. Start each session by reading active tasks and context through \`vem\` (\`vem task list\`, \`vem context show\`).
-2. After code changes, persist memory updates through \`vem\` CLI commands (\`vem context set\`, \`vem task ...\`, \`vem decision add\`, or \`vem finalize\` for \`vem_update\` blocks).
+2. After code changes, persist memory updates through \`vem\` CLI commands (\`vem context set\`, \`vem task ...\`, \`vem decision add\`, or \`vem finalize\` for \`vem_update\` blocks). When progress or implementation details change, also update task memory via \`vem task context <id> --append|--set ...\`; when completing a task, keep a concise handoff summary with \`--context-summary\` or \`task_context_summary\` in \`vem_update.tasks\`.
 3. Keep task updates atomic and mark completed work as done with evidence.
 4. Record significant architectural decisions with \`vem decision add\`.
 5. **ALWAYS run \`vem finalize\` immediately after producing a \`vem_update\` block.** Never leave a \`vem_update\` block unfinalized. Use:
