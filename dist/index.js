@@ -1209,6 +1209,46 @@ var buildRemoteTaskContextPatch = (patch, updatedTask) => {
   }
   return Object.keys(payload).length > 0 ? payload : null;
 };
+var submitStructuredVemUpdateToRemote = async (configService, update) => {
+  try {
+    const [apiKey, projectId] = await Promise.all([
+      resolveApiKey(configService),
+      configService.getProjectId()
+    ]);
+    if (!apiKey || !projectId) {
+      debugAgentSync("structured submit skipped: missing apiKey/projectId");
+      return false;
+    }
+    const response = await fetch(
+      `${API_URL}/projects/${projectId}/vem-update-structured`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          ...await buildDeviceHeaders(configService)
+        },
+        body: JSON.stringify({ update })
+      }
+    );
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      debugAgentSync(
+        "structured submit failed:",
+        String(response.status),
+        response.statusText,
+        errorBody ? `body=${errorBody}` : ""
+      );
+    }
+    return response.ok;
+  } catch (error) {
+    debugAgentSync(
+      "structured submit threw:",
+      error?.message ? String(error.message) : String(error)
+    );
+    return false;
+  }
+};
 var syncParsedTaskUpdatesToRemote = async (configService, update, result, activeTask) => {
   const hasTasks = Array.isArray(update.tasks) && update.tasks.length > 0;
   if (!hasTasks) {
@@ -1217,7 +1257,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       const changelogEntry = Array.isArray(update.changelog_append) ? update.changelog_append.join("\n").trim() || null : update.changelog_append?.trim() ?? null;
       await updateTaskMetaRemote(configService, activeTask, {
         raw_vem_update: JSON.parse(JSON.stringify(update)),
-        cli_version: "0.1.96",
+        cli_version: "0.1.97",
         ...changelogEntry ? { changelog_entry: changelogEntry } : {}
       });
     }
@@ -1274,7 +1314,7 @@ var syncParsedTaskUpdatesToRemote = async (configService, update, result, active
       ...patch.subtask_order !== void 0 ? { subtask_order: patch.subtask_order } : {},
       ...patch.due_at !== void 0 ? { due_at: patch.due_at } : {},
       raw_vem_update: JSON.parse(JSON.stringify(update)),
-      cli_version: "0.1.96",
+      cli_version: "0.1.97",
       // Task memory fields — stored in task_memory_entries on the API side.
       ...buildRemoteTaskContextPatch(patch, updatedTask) ?? {},
       changelog_entry: changelogReasoning ?? null
@@ -2249,12 +2289,18 @@ Agent exited with code ${exitCode}
           try {
             appliedUpdateResult = await applyVemUpdate(parsedAgentUpdate);
             console.log(chalk7.green("\u2714 Applied vem_update"));
-            await syncParsedTaskUpdatesToRemote(
+            const structuredSynced = await submitStructuredVemUpdateToRemote(
               configService,
-              parsedAgentUpdate,
-              appliedUpdateResult,
-              activeTask
+              parsedAgentUpdate
             );
+            if (!structuredSynced) {
+              await syncParsedTaskUpdatesToRemote(
+                configService,
+                parsedAgentUpdate,
+                appliedUpdateResult,
+                activeTask
+              );
+            }
             const syncedMemory = await syncProjectMemoryToRemote();
             if (syncedMemory) {
               console.log(chalk7.gray("\u2714 Synced vem_update memory to cloud"));
@@ -8356,18 +8402,39 @@ var REQUIRED_GITIGNORE_ENTRIES = [".vem/"];
 var VEM_AGENT_ENFORCEMENT_MARKER = "## vem Working Rules (Enforced)";
 var VEM_AGENT_ENFORCEMENT_BLOCK = `${VEM_AGENT_ENFORCEMENT_MARKER}
 
-All AI agents in this repository must use \`vem\` and follow the working rules.
+All AI agents in this repository must use \`vem\` as the source of truth for task and memory updates.
 
-1. Start each session by reading active tasks and context through \`vem\` (\`vem task list\`, \`vem context show\`).
-2. After code changes, persist memory updates through \`vem\` CLI commands (\`vem context set\`, \`vem task ...\`, \`vem decision add\`, or \`vem finalize\` for \`vem_update\` blocks). When progress or implementation details change, also update task memory via \`vem task context <id> --append|--set ...\`; when completing a task, keep a concise handoff summary with \`--context-summary\` or \`task_context_summary\` in \`vem_update.tasks\`.
-3. Keep task updates atomic and mark completed work as done with evidence.
-4. Record significant architectural decisions with \`vem decision add\`.
-5. **ALWAYS run \`vem finalize\` immediately after producing a \`vem_update\` block.** Never leave a \`vem_update\` block unfinalized. Use:
+### 1) Start-of-session protocol
+1. Read current work context first:
+   - \`vem task list\`
+   - \`vem context show\`
+2. If working a task, keep notes in task context (not project context):
+   - \`vem task context <id> --set "<text>"\`
+   - \`vem task context <id> --append "<text>"\`
+
+### 2) During implementation
+1. Keep task updates atomic and evidence-based.
+2. Use task context for ephemeral notes (blockers, hypotheses, links, iteration notes).
+3. Record major architecture decisions with \`vem decision add\`.
+
+### 3) Completion protocol (required)
+When an implementation run produces a \`vem_update\` block, you must immediately finalize it.
+
+1. Produce a complete \`vem_update\` payload (context/current_state/changelog/decisions/tasks as applicable).
+2. Run finalize immediately using:
    \`\`\`sh
    cat <<'EOF' | vem finalize --file /dev/stdin
    { ...vem_update JSON... }
    EOF
    \`\`\`
+3. For completed tasks, include evidence and retain a concise \`task_context_summary\`.
+
+### 4) Finalize reliability rules (critical)
+- Always use the global \`vem\` command (never a local file path).
+- Never suppress errors (\`2>/dev/null\`, silent fallbacks, etc.).
+- Never mask failure with \`|| echo ...\` or similar patterns.
+- Pass the complete, exact \`vem_update\` JSON payload.
+- If \`vem finalize\` fails, surface the real error and fix/retry; do not treat the run as complete.
 `;
 async function ensureVemGitignoreEntry() {
   const repoRoot = await getRepoRoot();
@@ -10135,16 +10202,28 @@ Snapshot Contents:`));
         console.log(chalk20.gray("Context updated."));
       }
       const configService = new ConfigService();
-      await syncParsedTaskUpdatesToRemote(
+      const structuredSynced = await submitStructuredVemUpdateToRemote(
         configService,
-        update,
-        result
+        update
       ).catch((err) => {
         console.error(
-          chalk20.yellow("[vem finalize] syncParsed failed:"),
+          chalk20.yellow("[vem finalize] structured sync failed:"),
           err instanceof Error ? err.message : String(err)
         );
+        return false;
       });
+      if (!structuredSynced) {
+        await syncParsedTaskUpdatesToRemote(
+          configService,
+          update,
+          result
+        ).catch((err) => {
+          console.error(
+            chalk20.yellow("[vem finalize] syncParsed failed:"),
+            err instanceof Error ? err.message : String(err)
+          );
+        });
+      }
       const synced = await syncProjectMemoryToRemote().catch(() => false);
       if (synced) {
         console.log(chalk20.gray("\u2714 Synced to cloud."));
@@ -12766,11 +12845,11 @@ async function initServerMonitoring(config) {
 await initServerMonitoring({
   dsn: "https://ed007f2c213d0aa07c1be256ca51750c@o4510863861612544.ingest.de.sentry.io/4510863921774672",
   environment: process.env.NODE_ENV || "production",
-  release: "0.1.96",
+  release: "0.1.97",
   serviceName: "cli"
 });
 var program = new Command();
-program.name("vem").description("vem Project Memory CLI").version("0.1.96").addHelpText(
+program.name("vem").description("vem Project Memory CLI").version("0.1.97").addHelpText(
   "after",
   `
 ${chalk22.bold("\n\u26A1 Power Workflows:")}

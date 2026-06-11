@@ -52,18 +52,39 @@ const REQUIRED_GITIGNORE_ENTRIES = [".vem/"] as const;
 const VEM_AGENT_ENFORCEMENT_MARKER = "## vem Working Rules (Enforced)";
 const VEM_AGENT_ENFORCEMENT_BLOCK = `${VEM_AGENT_ENFORCEMENT_MARKER}
 
-All AI agents in this repository must use \`vem\` and follow the working rules.
+All AI agents in this repository must use \`vem\` as the source of truth for task and memory updates.
 
-1. Start each session by reading active tasks and context through \`vem\` (\`vem task list\`, \`vem context show\`).
-2. After code changes, persist memory updates through \`vem\` CLI commands (\`vem context set\`, \`vem task ...\`, \`vem decision add\`, or \`vem finalize\` for \`vem_update\` blocks). When progress or implementation details change, also update task memory via \`vem task context <id> --append|--set ...\`; when completing a task, keep a concise handoff summary with \`--context-summary\` or \`task_context_summary\` in \`vem_update.tasks\`.
-3. Keep task updates atomic and mark completed work as done with evidence.
-4. Record significant architectural decisions with \`vem decision add\`.
-5. **ALWAYS run \`vem finalize\` immediately after producing a \`vem_update\` block.** Never leave a \`vem_update\` block unfinalized. Use:
+### 1) Start-of-session protocol
+1. Read current work context first:
+   - \`vem task list\`
+   - \`vem context show\`
+2. If working a task, keep notes in task context (not project context):
+   - \`vem task context <id> --set "<text>"\`
+   - \`vem task context <id> --append "<text>"\`
+
+### 2) During implementation
+1. Keep task updates atomic and evidence-based.
+2. Use task context for ephemeral notes (blockers, hypotheses, links, iteration notes).
+3. Record major architecture decisions with \`vem decision add\`.
+
+### 3) Completion protocol (required)
+When an implementation run produces a \`vem_update\` block, you must immediately finalize it.
+
+1. Produce a complete \`vem_update\` payload (context/current_state/changelog/decisions/tasks as applicable).
+2. Run finalize immediately using:
    \`\`\`sh
    cat <<'EOF' | vem finalize --file /dev/stdin
    { ...vem_update JSON... }
    EOF
    \`\`\`
+3. For completed tasks, include evidence and retain a concise \`task_context_summary\`.
+
+### 4) Finalize reliability rules (critical)
+- Always use the global \`vem\` command (never a local file path).
+- Never suppress errors (\`2>/dev/null\`, silent fallbacks, etc.).
+- Never mask failure with \`|| echo ...\` or similar patterns.
+- Pass the complete, exact \`vem_update\` JSON payload.
+- If \`vem finalize\` fails, surface the real error and fix/retry; do not treat the run as complete.
 `;
 
 async function ensureVemGitignoreEntry(): Promise<void> {

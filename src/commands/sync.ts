@@ -40,7 +40,10 @@ import {
 	trackCommandUsage,
 } from "../runtime.js";
 
-import { syncParsedTaskUpdatesToRemote } from "./agent.js";
+import {
+	submitStructuredVemUpdateToRemote,
+	syncParsedTaskUpdatesToRemote,
+} from "./agent.js";
 
 export function registerSyncCommands(program: Command) {
 	program
@@ -645,21 +648,29 @@ export function registerSyncCommands(program: Command) {
 					console.log(chalk.gray("Context updated."));
 				}
 
-				// Sync to remote so standalone `vem finalize` calls (e.g. from agents
-				// running outside of `vem agent --auto-exit`) also push to cloud.
-				// syncParsedTaskUpdatesToRemote updates per-task metadata (evidence,
-				// related_decisions, changelog reasoning) via the tasks API.
 				const configService = new ConfigService();
-				await syncParsedTaskUpdatesToRemote(
+				const structuredSynced = await submitStructuredVemUpdateToRemote(
 					configService,
 					update,
-					result,
 				).catch((err: unknown) => {
 					console.error(
-						chalk.yellow("[vem finalize] syncParsed failed:"),
+						chalk.yellow("[vem finalize] structured sync failed:"),
 						err instanceof Error ? err.message : String(err),
 					);
+					return false;
 				});
+				if (!structuredSynced) {
+					await syncParsedTaskUpdatesToRemote(
+						configService,
+						update,
+						result,
+					).catch((err: unknown) => {
+						console.error(
+							chalk.yellow("[vem finalize] syncParsed failed:"),
+							err instanceof Error ? err.message : String(err),
+						);
+					});
+				}
 				const synced = await syncProjectMemoryToRemote().catch(() => false);
 				if (synced) {
 					console.log(chalk.gray("✔ Synced to cloud."));

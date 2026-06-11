@@ -531,6 +531,53 @@ export const buildRemoteTaskContextPatch = (
 	return Object.keys(payload).length > 0 ? payload : null;
 };
 
+export const submitStructuredVemUpdateToRemote = async (
+	configService: ConfigService,
+	update: VemUpdate,
+): Promise<boolean> => {
+	try {
+		const [apiKey, projectId] = await Promise.all([
+			resolveApiKey(configService),
+			configService.getProjectId(),
+		]);
+		if (!apiKey || !projectId) {
+			debugAgentSync("structured submit skipped: missing apiKey/projectId");
+			return false;
+		}
+
+		const response = await fetch(
+			`${API_URL}/projects/${projectId}/vem-update-structured`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${apiKey}`,
+					"Content-Type": "application/json",
+					...(await buildDeviceHeaders(configService)),
+				},
+				body: JSON.stringify({ update }),
+			},
+		);
+
+		if (!response.ok) {
+			const errorBody = await response.text().catch(() => "");
+			debugAgentSync(
+				"structured submit failed:",
+				String(response.status),
+				response.statusText,
+				errorBody ? `body=${errorBody}` : "",
+			);
+		}
+
+		return response.ok;
+	} catch (error: any) {
+		debugAgentSync(
+			"structured submit threw:",
+			error?.message ? String(error.message) : String(error),
+		);
+		return false;
+	}
+};
+
 export const syncParsedTaskUpdatesToRemote = async (
 	configService: ConfigService,
 	update: VemUpdate,
@@ -1859,12 +1906,18 @@ This file is generated for the active task. Update task context via:
 						try {
 							appliedUpdateResult = await applyVemUpdate(parsedAgentUpdate);
 							console.log(chalk.green("✔ Applied vem_update"));
-							await syncParsedTaskUpdatesToRemote(
+							const structuredSynced = await submitStructuredVemUpdateToRemote(
 								configService,
 								parsedAgentUpdate,
-								appliedUpdateResult,
-								activeTask,
 							);
+							if (!structuredSynced) {
+								await syncParsedTaskUpdatesToRemote(
+									configService,
+									parsedAgentUpdate,
+									appliedUpdateResult,
+									activeTask,
+								);
+							}
 							const syncedMemory = await syncProjectMemoryToRemote();
 							if (syncedMemory) {
 								console.log(chalk.gray("✔ Synced vem_update memory to cloud"));
